@@ -182,7 +182,7 @@ struct ContentView: View {
                             app: app,
                             isExpanded: expandedApp == app.appName,
                             onTap: {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                withAnimation(.easeInOut(duration: 0.25)) {
                                     expandedApp = (expandedApp == app.appName) ? nil : app.appName
                                 }
                             }
@@ -249,26 +249,15 @@ struct AppCard: View {
                     Text(String(format: "%.0f%%", app.cpuUsage)).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundColor(.secondary).frame(width: 35, alignment: .trailing)
                     Text(heat.label).font(.system(size: 9, weight: .bold)).foregroundColor(heat.color).frame(width: 40, alignment: .trailing)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 10)
+                .padding(.horizontal, 10).padding(.vertical, 10)
             }
             .buttonStyle(.plain)
 
             if isExpanded {
-                // Moved divider UP by adding negative top padding and increased detail view top padding to compensate
-                Divider()
-                    .padding(.horizontal, 10)
-                    .padding(.top, -6) // Pull the divider line up closer to the app info
-                
+                Divider().padding(.horizontal, 10).padding(.top, -6)
                 AppDetailView(app: app, heat: heat)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 10) // Push the content down so 'CPU HISTORY' stays in the same spot
-                    .padding(.bottom, 10)
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98, anchor: .bottom)),
-                        removal: .opacity
-                    ))
+                    .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 10)
+                    .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98, anchor: .bottom)), removal: .opacity))
             }
         }
         .clipped()
@@ -286,7 +275,7 @@ struct AppDetailView: View {
             Text("CPU History (60s)").font(.system(size: 8, weight: .bold)).foregroundColor(.secondary).textCase(.uppercase)
             
             HStack(alignment: .center, spacing: 12) {
-                if !app.history.isEmpty {
+                if app.history.count >= 2 {
                     Chart(app.history) { pt in
                         LineMark(x: .value("x", pt.id), y: .value("y", pt.cpu))
                             .interpolationMethod(.monotone)
@@ -296,7 +285,8 @@ struct AppDetailView: View {
                             .foregroundStyle(LinearGradient(colors: [heat.color.opacity(0.15), heat.color.opacity(0)], startPoint: .top, endPoint: .bottom))
                     }
                     .chartXAxis(.hidden).chartYAxis(.hidden)
-                    .chartXScale(domain: .automatic(includesZero: true))
+                    // REMOVED includesZero: true to ensure graph starts at the very first point on the left
+                    .chartXScale(domain: app.history.first!.id...app.history.last!.id)
                     .chartYScale(domain: .automatic(includesZero: true))
                     .frame(height: 50)
                     .padding(.leading, -4)
