@@ -11,7 +11,7 @@ Flux is a professional, high performance battery and system monitor for macOS th
     - **RAM Tracking:** Accurate resident memory usage shown in MB or GB.
     - **Drain Heat Levels:** Categorises energy impact (Low, Moderate, High, Extreme).
 - **System Wide Dashboard:** Aggregate CPU and RAM metrics (Used/Total) available at a glance.
-- **Interactive Graph Tooltip:** Floating indicator that tracks your cursor across a 12-hour timeline to display exact battery percentage and time.
+- **Interactive Graph Tooltip:** Floating indicator that tracks your cursor across a 12 hour timeline to display exact battery percentage and time.
 
 ## How it Works
 
