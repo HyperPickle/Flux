@@ -88,17 +88,29 @@ enum HeatLevel {
 struct ContentView: View {
     @ObservedObject var monitor: BatteryMonitor
     @State private var expandedApp: String? = nil
+    @State private var hoveredPoint: BatteryDataPoint? = nil
+    @State private var tooltipX: CGFloat = 0
+    @State private var tooltipY: CGFloat = 0
 
     var dummyChartData: [BatteryDataPoint] {
         let now = Date()
         let current = monitor.batteryLevel > 0 ? monitor.batteryLevel : 50
-        return [
-            BatteryDataPoint(id: 0, time: now.addingTimeInterval(-12 * 3600), level: 100),
-            BatteryDataPoint(id: 1, time: now.addingTimeInterval(-9 * 3600),  level: 85),
-            BatteryDataPoint(id: 2, time: now.addingTimeInterval(-6 * 3600),  level: 60),
-            BatteryDataPoint(id: 3, time: now.addingTimeInterval(-3 * 3600),  level: 45),
-            BatteryDataPoint(id: 4, time: now,                                level: current),
-        ]
+        
+        // Generate 73 points (every 10 mins over 12 hours) for maximum smoothness
+        var points: [BatteryDataPoint] = []
+        let totalPoints = 72
+        for i in 0...totalPoints {
+            let offset = Double(totalPoints - i) * 10 * 60
+            let time = now.addingTimeInterval(-offset)
+            
+            let progress = Double(i) / Double(totalPoints)
+            let baseLevel = 100.0 - (progress * (100.0 - Double(current)))
+            // REDUCED NOISE: subtle fluctuations for a cleaner look
+            let level = Int(max(0, min(100, baseLevel)))
+            
+            points.append(BatteryDataPoint(id: i, time: time, level: i == totalPoints ? current : level))
+        }
+        return points
     }
 
     var chartColor: Color {
@@ -153,19 +165,80 @@ struct ContentView: View {
             .padding(.bottom, 14)
 
             // ── Battery chart ────────────────────────────────────────
-            Chart(dummyChartData) { point in
-                LineMark(x: .value("T", point.time), y: .value("L", point.level))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(chartColor)
-                AreaMark(x: .value("T", point.time), y: .value("L", point.level))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(LinearGradient(
-                        colors: [chartColor.opacity(monitor.isCharging ? 0.35 : 0.2), chartColor.opacity(0)],
-                        startPoint: .top, endPoint: .bottom))
+            ZStack(alignment: .topLeading) {
+                Chart(dummyChartData) { point in
+                    LineMark(x: .value("T", point.time), y: .value("L", point.level))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(chartColor)
+                    AreaMark(x: .value("T", point.time), y: .value("L", point.level))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(LinearGradient(
+                            colors: [chartColor.opacity(monitor.isCharging ? 0.35 : 0.2), chartColor.opacity(0)],
+                            startPoint: .top, endPoint: .bottom))
+                    
+                    if let hovered = hoveredPoint {
+                        RuleMark(x: .value("T", hovered.time))
+                            .foregroundStyle(chartColor.opacity(0.4))
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        PointMark(x: .value("T", hovered.time), y: .value("L", hovered.level))
+                            .foregroundStyle(chartColor)
+                            .symbolSize(30)
+                    }
+                }
+                .chartYScale(domain: 0...100)
+                .chartXAxis(.hidden).chartYAxis(.hidden)
+                .frame(height: 60)
+                .chartOverlay { proxy in
+                    GeometryReader { geo in
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                if #available(macOS 14, *) {
+                                    switch phase {
+                                    case .active(let location):
+                                        let relX = location.x - geo[proxy.plotFrame!].minX
+                                        if let date: Date = proxy.value(atX: relX) {
+                                            let nearest = dummyChartData.min(by: {
+                                                abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date))
+                                            })
+                                            hoveredPoint = nearest
+                                            tooltipX = relX
+                                            tooltipY = location.y
+                                        }
+                                    case .ended:
+                                        hoveredPoint = nil
+                                    }
+                                }
+                            }
+                    }
+                }
+
+                // Floating tooltip
+                if let hovered = hoveredPoint {
+                    let timeStr = {
+                        let f = DateFormatter()
+                        f.dateFormat = "h:mm a"
+                        return f.string(from: hovered.time)
+                    }()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(hovered.level)%")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(chartColor)
+                        Text(timeStr)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 5)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(chartColor.opacity(0.25), lineWidth: 1))
+                    .offset(x: min(max(tooltipX - 28, 0), 210), y: tooltipY > 30 ? -2 : 30)
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.1), value: hovered.id)
+                    .allowsHitTesting(false)
+                }
             }
-            .chartYScale(domain: 0...100)
-            .chartXAxis(.hidden).chartYAxis(.hidden)
-            .frame(height: 60)
             .padding(.horizontal, 16)
 
             // ── Processes ───────────────────────────────────────────
@@ -182,7 +255,7 @@ struct ContentView: View {
                             app: app,
                             isExpanded: expandedApp == app.appName,
                             onTap: {
-                                withAnimation(.easeInOut(duration: 0.25)) {
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
                                     expandedApp = (expandedApp == app.appName) ? nil : app.appName
                                 }
                             }
@@ -249,15 +322,25 @@ struct AppCard: View {
                     Text(String(format: "%.0f%%", app.cpuUsage)).font(.system(size: 10, weight: .bold, design: .rounded)).foregroundColor(.secondary).frame(width: 35, alignment: .trailing)
                     Text(heat.label).font(.system(size: 9, weight: .bold)).foregroundColor(heat.color).frame(width: 40, alignment: .trailing)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 10)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 10)
             }
             .buttonStyle(.plain)
 
             if isExpanded {
-                Divider().padding(.horizontal, 10).padding(.top, -6)
+                Divider()
+                    .padding(.horizontal, 10)
+                    .padding(.top, -6)
+                
                 AppDetailView(app: app, heat: heat)
-                    .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 10)
-                    .transition(.asymmetric(insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98, anchor: .bottom)), removal: .opacity))
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+                    .padding(.bottom, 10)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)).combined(with: .scale(scale: 0.98, anchor: .bottom)),
+                        removal: .opacity
+                    ))
             }
         }
         .clipped()
@@ -285,7 +368,6 @@ struct AppDetailView: View {
                             .foregroundStyle(LinearGradient(colors: [heat.color.opacity(0.15), heat.color.opacity(0)], startPoint: .top, endPoint: .bottom))
                     }
                     .chartXAxis(.hidden).chartYAxis(.hidden)
-                    // REMOVED includesZero: true to ensure graph starts at the very first point on the left
                     .chartXScale(domain: app.history.first!.id...app.history.last!.id)
                     .chartYScale(domain: .automatic(includesZero: true))
                     .frame(height: 50)

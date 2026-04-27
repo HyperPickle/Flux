@@ -39,6 +39,13 @@ class BatteryMonitor: ObservableObject {
     private var timer: Timer?
     private var topProcess: Process?
     
+    private let coreCount: Double = {
+        var ncpu: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        sysctlbyname("hw.ncpu", &ncpu, &size, nil, 0)
+        return Double(ncpu > 0 ? ncpu : 1)
+    }()
+
     private let totalRAMBytes: Int64 = {
         var size: Int64 = 0
         var sizeLen = MemoryLayout<Int64>.size
@@ -138,7 +145,7 @@ class BatteryMonitor: ObservableObject {
             let parts = trimmed.components(separatedBy: ",")
             if parts.count >= 3 {
                 let userStr = parts[0].replacingOccurrences(of: "CPU usage: ", with: "").replacingOccurrences(of: "% user", with: "").trimmingCharacters(in: .whitespaces)
-                let sysStr = parts[1].replacingOccurrences(of: "% sys", with: "").trimmingCharacters(in: .whitespaces)
+                let sysStr = parts[1].replacingOccurrences(of: "% sys", with: "").replacingOccurrences(of: "% sys", with: "").trimmingCharacters(in: .whitespaces)
                 if let user = Double(userStr), let sys = Double(sysStr) {
                     let total = user + sys
                     await MainActor.run { 
@@ -170,7 +177,12 @@ class BatteryMonitor: ObservableObject {
             guard parts.count >= 5 else { return }
             let memStr = parts.last ?? "0B"
             let power  = Double(parts[parts.count - 2]) ?? 0.0
-            let cpu    = Double(parts[parts.count - 3]) ?? 0.0
+            let rawCpu = Double(parts[parts.count - 3]) ?? 0.0
+            
+            // Fixed await syntax
+            let cores  = await getCoreCount()
+            let cpu    = rawCpu / cores
+            
             let commandName = parts[1..<(parts.count - 3)].joined(separator: " ")
 
             var matchedApp: String? = nil
@@ -195,6 +207,8 @@ class BatteryMonitor: ObservableObject {
     }
     private func setParsing(_ value: Bool) async { await MainActor.run { isDataLine = value } }
     private func getParsing() async -> Bool { await MainActor.run { isDataLine } }
+    private func getCoreCount() async -> Double { await MainActor.run { coreCount } }
+    
     private func addToSample(appName: String, power: Double, cpu: Double, memMB: Int) async {
         await MainActor.run {
             currentAppPowerMap[appName, default: 0.0] += power
