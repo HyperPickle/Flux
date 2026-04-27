@@ -1,12 +1,20 @@
 import SwiftUI
 import Charts
 import AppKit
+import Foundation
+import IOKit.ps
 
 // MARK: - Battery chart data
-struct BatteryDataPoint: Identifiable {
+struct BatteryDataPoint: Identifiable, Codable {
     let id: Int
     let time: Date
     let level: Int
+}
+
+struct BatteryRenderPoint: Identifiable {
+    let id: Int
+    let time: Date
+    let level: Double
 }
 
 // MARK: - Drain Level
@@ -58,6 +66,7 @@ enum HeatLevel {
             }
         }
     }
+
     var label: String {
         switch self {
         case .low:      return "Low"
@@ -87,30 +96,55 @@ enum HeatLevel {
 // MARK: - Main view
 struct ContentView: View {
     @ObservedObject var monitor: BatteryMonitor
+    @Environment(\.colorScheme) private var colorScheme
     @State private var expandedApp: String? = nil
     @State private var hoveredPoint: BatteryDataPoint? = nil
     @State private var tooltipX: CGFloat = 0
     @State private var tooltipY: CGFloat = 0
+    @State private var zoomHours: Double = 6.0
 
-    var dummyChartData: [BatteryDataPoint] {
+    var batteryHistory: [BatteryDataPoint] {
         let now = Date()
-        let current = monitor.batteryLevel > 0 ? monitor.batteryLevel : 50
+        let cutoff = now.addingTimeInterval(-zoomHours * 3600)
+        return monitor.batteryHistory
+            .filter { $0.time >= cutoff }
+            .sorted { $0.time < $1.time }
+    }
+    
+    var smoothedBatteryHistory: [BatteryRenderPoint] {
+        guard !batteryHistory.isEmpty else { return [] }
         
-        // Generate 73 points (every 10 mins over 12 hours) for maximum smoothness
-        var points: [BatteryDataPoint] = []
-        let totalPoints = 72
-        for i in 0...totalPoints {
-            let offset = Double(totalPoints - i) * 10 * 60
-            let time = now.addingTimeInterval(-offset)
-            
-            let progress = Double(i) / Double(totalPoints)
-            let baseLevel = 100.0 - (progress * (100.0 - Double(current)))
-            // REDUCED NOISE: subtle fluctuations for a cleaner look
-            let level = Int(max(0, min(100, baseLevel)))
-            
-            points.append(BatteryDataPoint(id: i, time: time, level: i == totalPoints ? current : level))
+        var smoothed: [BatteryRenderPoint] = []
+        smoothed.reserveCapacity(batteryHistory.count)
+        
+        // Lightweight EMA keeps performance high while removing visual stair-stepping.
+        let alpha = 0.25
+        var ema = Double(batteryHistory[0].level)
+        
+        for point in batteryHistory {
+            ema += alpha * (Double(point.level) - ema)
+            smoothed.append(BatteryRenderPoint(id: point.id, time: point.time, level: ema))
         }
-        return points
+        
+        return smoothed
+    }
+    
+    var chargingPeriodHistory: [BatteryRenderPoint] {
+        guard monitor.isCharging, smoothedBatteryHistory.count > 1 else { return [] }
+        
+        let levels = batteryHistory.map(\.level)
+        var startIndex = max(0, levels.count - 1)
+        
+        // Walk backward from "now" to find where the current charging stretch began.
+        for i in stride(from: levels.count - 1, through: 1, by: -1) {
+            if levels[i - 1] > levels[i] {
+                startIndex = i
+                break
+            }
+            startIndex = i - 1
+        }
+        
+        return Array(smoothedBatteryHistory.dropFirst(startIndex))
     }
 
     var chartColor: Color {
@@ -118,6 +152,10 @@ struct ContentView: View {
         if monitor.batteryLevel <= 20  { return .red }
         if monitor.batteryLevel <= 40  { return .orange }
         return .green
+    }
+    
+    var unknownLineColor: Color {
+        colorScheme == .dark ? .white.opacity(0.45) : .black.opacity(0.45)
     }
 
     var body: some View {
@@ -166,15 +204,41 @@ struct ContentView: View {
 
             // ── Battery chart ────────────────────────────────────────
             ZStack(alignment: .topLeading) {
-                Chart(dummyChartData) { point in
-                    LineMark(x: .value("T", point.time), y: .value("L", point.level))
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(chartColor)
-                    AreaMark(x: .value("T", point.time), y: .value("L", point.level))
-                        .interpolationMethod(.monotone)
-                        .foregroundStyle(LinearGradient(
-                            colors: [chartColor.opacity(monitor.isCharging ? 0.35 : 0.2), chartColor.opacity(0)],
-                            startPoint: .top, endPoint: .bottom))
+                Chart {
+                    ForEach(smoothedBatteryHistory) { point in
+                        LineMark(x: .value("T", point.time), y: .value("L", point.level))
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(chartColor)
+                            .lineStyle(StrokeStyle(lineWidth: 2))
+                        
+                        AreaMark(x: .value("T", point.time), y: .value("L", point.level))
+                            .interpolationMethod(.catmullRom)
+                            .foregroundStyle(LinearGradient(
+                                colors: [chartColor.opacity(monitor.isCharging ? 0.35 : 0.2), chartColor.opacity(0)],
+                                startPoint: .top, endPoint: .bottom))
+                    }
+                    
+                    if monitor.isCharging {
+                        ForEach(chargingPeriodHistory) { point in
+                            AreaMark(x: .value("T", point.time), y: .value("L", point.level))
+                                .interpolationMethod(.catmullRom)
+                                .foregroundStyle(chartColor.opacity(0.22))
+                        }
+                    }
+                    
+                    // Show dotted line for missing data
+                    if batteryHistory.isEmpty {
+                        RuleMark(y: .value("L", monitor.batteryLevel))
+                            .foregroundStyle(unknownLineColor)
+                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    } else if let first = batteryHistory.first {
+                        let cutoff = Date().addingTimeInterval(-zoomHours * 3600)
+                        if first.time > cutoff.addingTimeInterval(300) {
+                            RuleMark(xStart: .value("T", cutoff), xEnd: .value("T", first.time), y: .value("L", first.level))
+                                .foregroundStyle(unknownLineColor)
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        }
+                    }
                     
                     if let hovered = hoveredPoint {
                         RuleMark(x: .value("T", hovered.time))
@@ -186,33 +250,48 @@ struct ContentView: View {
                     }
                 }
                 .chartYScale(domain: 0...100)
+                .chartXScale(domain: Date().addingTimeInterval(-zoomHours * 3600)...Date())
                 .chartXAxis(.hidden).chartYAxis(.hidden)
                 .frame(height: 60)
                 .chartOverlay { proxy in
                     GeometryReader { geo in
-                        Rectangle()
-                            .fill(Color.clear)
-                            .contentShape(Rectangle())
-                            .onContinuousHover { phase in
+                        ScrollDetector(
+                            zoomHours: $zoomHours,
+                            hoveredPoint: $hoveredPoint,
+                            tooltipX: $tooltipX,
+                            tooltipY: $tooltipY,
+                            proxy: proxy,
+                            plotFrame: {
                                 if #available(macOS 14, *) {
-                                    switch phase {
-                                    case .active(let location):
-                                        let relX = location.x - geo[proxy.plotFrame!].minX
-                                        if let date: Date = proxy.value(atX: relX) {
-                                            let nearest = dummyChartData.min(by: {
-                                                abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date))
-                                            })
-                                            hoveredPoint = nearest
-                                            tooltipX = relX
-                                            tooltipY = location.y
-                                        }
-                                    case .ended:
-                                        hoveredPoint = nil
+                                    if let anchor = proxy.plotFrame {
+                                        return geo[anchor]
                                     }
                                 }
-                            }
+                                return geo.frame(in: .local)
+                            }(),
+                            batteryHistory: batteryHistory,
+                            batteryLevel: monitor.batteryLevel
+                        )
+                        .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
+                .onDisappear {
+                    hoveredPoint = nil
+                }
+
+                // Zoom label (briefly shown when zooming?)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Text("\(Int(zoomHours))h")
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .foregroundColor(.secondary.opacity(0.5))
+                            .padding(.trailing, 4)
+                            .padding(.bottom, 2)
+                    }
+                }
+                .allowsHitTesting(false)
 
                 // Floating tooltip
                 if let hovered = hoveredPoint {
@@ -397,5 +476,132 @@ struct DetailStat: View {
         }
         .padding(4).frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.03)).clipShape(RoundedRectangle(cornerRadius: 4))
+    }
+}
+
+struct ScrollDetector: NSViewRepresentable {
+    @Binding var zoomHours: Double
+    @Binding var hoveredPoint: BatteryDataPoint?
+    @Binding var tooltipX: CGFloat
+    @Binding var tooltipY: CGFloat
+    let proxy: ChartProxy
+    let plotFrame: CGRect
+    let batteryHistory: [BatteryDataPoint]
+    let batteryLevel: Int
+    
+    func makeNSView(context: Context) -> NSView {
+        let view = ScrollNSView()
+        configure(view)
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? ScrollNSView else { return }
+        configure(view)
+    }
+    
+    private func configure(_ view: ScrollNSView) {
+        view.onScroll = { delta in
+            let factor: Double = 0.05
+            var newZoom = zoomHours + (delta * factor)
+            newZoom = max(1, min(24, newZoom))
+            if zoomHours != newZoom {
+                zoomHours = newZoom
+            }
+        }
+        
+        view.onHover = { location in
+            guard let location else {
+                hoveredPoint = nil
+                return
+            }
+            
+            guard plotFrame.contains(location) else {
+                hoveredPoint = nil
+                return
+            }
+            
+            let plotX = location.x - plotFrame.origin.x
+            let date: Date
+            if let proxyDate: Date = proxy.value(atX: plotX) {
+                date = proxyDate
+            } else {
+                let clampedRatio = min(max(plotX / max(plotFrame.width, 1), 0), 1)
+                let windowSeconds = zoomHours * 3600
+                date = Date().addingTimeInterval(-windowSeconds + (clampedRatio * windowSeconds))
+            }
+            
+            if let nearest = batteryHistory.min(by: {
+                abs($0.time.timeIntervalSince(date)) < abs($1.time.timeIntervalSince(date))
+            }) {
+                hoveredPoint = nearest
+                tooltipX = location.x
+                tooltipY = plotFrame.maxY - location.y
+            } else if batteryHistory.isEmpty {
+                hoveredPoint = BatteryDataPoint(id: -1, time: date, level: batteryLevel)
+                tooltipX = location.x
+                tooltipY = plotFrame.maxY - location.y
+            } else {
+                hoveredPoint = nil
+            }
+        }
+    }
+    
+    class ScrollNSView: NSView {
+        var onScroll: ((Double) -> Void)?
+        var onHover: ((CGPoint?) -> Void)?
+        private var trackingArea: NSTrackingArea?
+        
+        override var isFlipped: Bool { true }
+        override var acceptsFirstResponder: Bool { true }
+        
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            self
+        }
+        
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            window?.acceptsMouseMovedEvents = true
+        }
+        
+        override func updateTrackingAreas() {
+            if let trackingArea {
+                removeTrackingArea(trackingArea)
+            }
+            
+            let area = NSTrackingArea(
+                rect: bounds,
+                options: [.inVisibleRect, .activeAlways, .mouseEnteredAndExited, .mouseMoved, .enabledDuringMouseDrag],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            trackingArea = area
+            super.updateTrackingAreas()
+        }
+        
+        override func mouseEntered(with event: NSEvent) {
+            onHover?(convert(event.locationInWindow, from: nil))
+        }
+        
+        override func mouseMoved(with event: NSEvent) {
+            onHover?(convert(event.locationInWindow, from: nil))
+        }
+        
+        override func mouseExited(with event: NSEvent) {
+            onHover?(nil)
+        }
+        
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+        }
+        
+        override func scrollWheel(with event: NSEvent) {
+            if event.scrollingDeltaY != 0 {
+                onScroll?(-Double(event.scrollingDeltaY))
+            } else {
+                super.scrollWheel(with: event)
+            }
+        }
     }
 }
