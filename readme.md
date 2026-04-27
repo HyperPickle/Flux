@@ -13,14 +13,6 @@ Flux is a professional, high performance battery and system monitor for macOS th
     - **Drain Heat Levels:** Intelligent categorization of energy impact (Low, Moderate, High, Extreme).
 - **System-Wide Dashboard:** Aggregate CPU and RAM metrics (Used/Total) available at a glance.
 
-## Installation
-
-Flux is a standalone menu bar application. 
-
-1. Clone the repository.
-2. Open `Package.swift` in Xcode.
-3. Build and run the project.
-
 ## How it Works
 
 Flux monitors system activity using the `top` utility in a non-blocking, asynchronous stream. It parses energy impact and resource utilization in the background, updating the UI only when necessary to ensure the monitor itself doesn't become a source of battery drain.
@@ -29,5 +21,3 @@ Flux monitors system activity using the `top` utility in a non-blocking, asynchr
 
 - macOS 13.0 or later (Ventura+)
 - Xcode 14.1+ (for building from source)
-
----
