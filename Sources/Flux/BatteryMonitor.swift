@@ -33,6 +33,19 @@ class BatteryMonitor: ObservableObject {
     @Published var systemCPUValue: Double = 0.0
     @Published var systemRAM: String = "0/0GB"
     @Published var systemRAMPercent: Double = 0.0
+    @Published var batteryHistory: [BatteryDataPoint] = [] {
+        didSet {
+            saveHistory()
+        }
+    }
+
+    private var historyFileURL: URL? = {
+        let fileManager = FileManager.default
+        guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let fluxDir = appSupport.appendingPathComponent("Flux")
+        try? fileManager.createDirectory(at: fluxDir, withIntermediateDirectories: true)
+        return fluxDir.appendingPathComponent("battery_history.json")
+    }()
 
     private var appHistory: [String: [AppMetricPoint]] = [:]
     private let maxHistory = 15
@@ -54,10 +67,39 @@ class BatteryMonitor: ObservableObject {
     }()
 
     init() {
+        print("DEBUG: BatteryMonitor initializing...")
+        loadHistory()
         fetchBatteryInfo()
         startMonitoring()
         startTopStream()
     }
+
+    private func loadHistory() {
+        guard let url = historyFileURL, let data = try? Data(contentsOf: url) else { return }
+        let decoder = JSONDecoder()
+        if let decoded = try? decoder.decode([BatteryDataPoint].self, from: data) {
+            // Filter points older than 24h
+            let cutoff = Date().addingTimeInterval(-24 * 3600)
+            self.batteryHistory = decoded.filter { $0.time > cutoff }
+            print("DEBUG: Loaded \(batteryHistory.count) historical points.")
+        }
+    }
+
+    private var lastSaveTime: Date = .distantPast
+    private func saveHistory() {
+        // Save at most once every 30 seconds to avoid disk churn
+        let now = Date()
+        guard now.timeIntervalSince(lastSaveTime) > 30 else { return }
+        lastSaveTime = now
+        
+        guard let url = historyFileURL else { return }
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(batteryHistory) {
+            try? data.write(to: url)
+        }
+    }
+
+
 
     deinit {
         topProcess?.terminate()
@@ -98,6 +140,18 @@ class BatteryMonitor: ObservableObject {
                     timeRemaining = "\(h):\(String(format: "%02d", m)) remaining"
                 } else { timeRemaining = "On Battery" }
             }
+            
+            // Update history
+            let now = Date()
+            let newPoint = BatteryDataPoint(id: (batteryHistory.last?.id ?? -1) + 1, time: now, level: batteryLevel)
+            
+            // Only add if level changed or enough time passed (e.g. 1 min) to avoid over-sampling, 
+            // but for a smooth graph every 10s is fine if we prune.
+            batteryHistory.append(newPoint)
+            
+            // Prune history older than 24 hours
+            let twentyFourHoursAgo = now.addingTimeInterval(-24 * 3600)
+            batteryHistory.removeAll { $0.time < twentyFourHoursAgo }
         }
     }
 
