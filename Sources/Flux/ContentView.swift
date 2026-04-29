@@ -717,6 +717,8 @@ struct ScrollDetector: NSViewRepresentable {
         var onHover: ((CGPoint?) -> Void)?
         private var trackingArea: NSTrackingArea?
         
+        private static let invisibleCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: NSPoint.zero)
+
         override var isFlipped: Bool { true }
         override var acceptsFirstResponder: Bool { true }
         
@@ -729,6 +731,11 @@ struct ScrollDetector: NSViewRepresentable {
             window?.acceptsMouseMovedEvents = true
         }
         
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: Self.invisibleCursor)
+        }
+
         override func updateTrackingAreas() {
             if let trackingArea {
                 removeTrackingArea(trackingArea)
