@@ -11,3 +11,6 @@ DerivedData/
 *.pem
 *.app
 *.zip
+venv/
+__pycache__/
+*.pyc
