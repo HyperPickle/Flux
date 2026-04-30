@@ -320,6 +320,19 @@ struct ContentView: View {
                         .offset(y: -4)
                 }
                 Spacer()
+
+                Toggle(isOn: Binding(
+                    get: { monitor.isLowPowerMode },
+                    set: { monitor.setLowPowerMode($0) }
+                )) {
+                    Text("Low Power Mode")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .padding(.top, 4)
+                .padding(.trailing, 8)
+
                 Button(action: { NSApplication.shared.terminate(nil) }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title3)
