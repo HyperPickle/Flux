@@ -114,6 +114,28 @@ class BatteryMonitor: ObservableObject {
         }
     }
 
+    func setLowPowerMode(_ enabled: Bool) {
+        let value = enabled ? 1 : 0
+        let scriptSource = "do shell script \"pmset -a lowpowermode \(value)\" with administrator privileges"
+
+        Task.detached {
+            if let script = NSAppleScript(source: scriptSource) {
+                var errorInfo: NSDictionary? = nil
+                script.executeAndReturnError(&errorInfo)
+                if let error = errorInfo {
+                    print("Error setting Low Power Mode: \(error)")
+                }
+            }
+
+            // Wait a moment for system to apply change
+            try? await Task.sleep(nanoseconds: 500_000_000)
+
+            await MainActor.run {
+                self.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+            }
+        }
+    }
+
     func fetchBatteryInfo() {
         guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]

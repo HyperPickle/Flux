@@ -8,21 +8,17 @@ struct FluxApp: App {
         MenuBarExtra {
             ContentView(monitor: monitor)
         } label: {
-            Image(systemName: "bolt.fill")
+            Image(systemName: monitor.isCharging ? "battery.100.bolt" : "battery.100", variableValue: Double(monitor.batteryLevel) / 100.0)
                 .foregroundColor(menuBarColor)
         }
         .menuBarExtraStyle(.window)
     }
     
     private var menuBarColor: Color {
-        // Dynamic color based on battery drain / level
-        if monitor.isCharging {
-            return .green
-        } else if monitor.batteryLevel <= 20 || monitor.isLowPowerMode {
+        if monitor.isLowPowerMode {
             return .yellow
-        } else if monitor.totalEnergyImpact > 100 {
-            // High drain
-            return .orange
+        } else if monitor.batteryLevel <= 20 {
+            return .red
         } else {
             return .primary
         }
