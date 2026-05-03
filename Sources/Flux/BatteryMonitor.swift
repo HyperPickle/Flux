@@ -27,12 +27,13 @@ class BatteryMonitor: ObservableObject {
     @Published var timeRemaining: String = "Calculating…"
     @Published var topEnergyApps: [AppEnergyUsage] = []
     @Published var totalEnergyImpact: Double = 0.0
-    @Published var isLowPowerMode: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
     
     @Published var systemCPU: String = "0%"
     @Published var systemCPUValue: Double = 0.0
     @Published var systemRAM: String = "0/0GB"
     @Published var systemRAMPercent: Double = 0.0
+    @Published var memoryPressure: String = "Normal"
+    @Published var memoryPressureState: Int = 0 // 0: Normal, 1: Warn, 2: Critical
     @Published var batteryHistory: [BatteryDataPoint] = [] {
         didSet {
             saveHistory()
@@ -48,7 +49,7 @@ class BatteryMonitor: ObservableObject {
     }()
 
     private var appHistory: [String: [AppMetricPoint]] = [:]
-    private let maxHistory = 15
+    private let maxHistory = 720
     private var timer: Timer?
     private var topProcess: Process?
     
@@ -106,32 +107,32 @@ class BatteryMonitor: ObservableObject {
     }
 
     private func startMonitoring() {
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        let interval = UserDefaults.standard.double(forKey: "updateInterval") > 0 ? UserDefaults.standard.double(forKey: "updateInterval") : 5.0
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.fetchBatteryInfo()
-                self?.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+                self?.fetchMemoryPressure()
+                
+                // Check if interval changed
+                let newInterval = UserDefaults.standard.double(forKey: "updateInterval") > 0 ? UserDefaults.standard.double(forKey: "updateInterval") : 5.0
+                if let currentTimer = self?.timer, currentTimer.timeInterval != newInterval {
+                    currentTimer.invalidate()
+                    self?.startMonitoring()
+                }
             }
         }
     }
 
-    func setLowPowerMode(_ enabled: Bool) {
-        let value = enabled ? 1 : 0
-        let scriptSource = "do shell script \"pmset -a lowpowermode \(value)\" with administrator privileges"
-
-        Task.detached {
-            if let script = NSAppleScript(source: scriptSource) {
-                var errorInfo: NSDictionary? = nil
-                script.executeAndReturnError(&errorInfo)
-                if let error = errorInfo {
-                    print("Error setting Low Power Mode: \(error)")
-                }
-            }
-
-            // Wait a moment for system to apply change
-            try? await Task.sleep(nanoseconds: 500_000_000)
-
-            await MainActor.run {
-                self.isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private func fetchMemoryPressure() {
+        var pressure: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("vm.memory_pressure", &pressure, &size, nil, 0) == 0 {
+            // 0: Normal, 1: Warning, 2: Critical
+            memoryPressureState = Int(pressure)
+            switch pressure {
+            case 1: memoryPressure = "Warn"
+            case 2, 4: memoryPressure = "Critical" // Some OS versions use 4 for critical
+            default: memoryPressure = "Normal"
             }
         }
     }
