@@ -5,6 +5,7 @@ import AppKit
 // MARK: - Data point for sparklines
 struct AppMetricPoint: Identifiable, Equatable {
     let id: Int
+    let time: Date
     let cpu: Double
     let power: Double
 }
@@ -304,7 +305,7 @@ class BatteryMonitor: ObservableObject {
                 let cpu = cpuMap[appName] ?? 0.0
                 var hist = self.appHistory[appName] ?? []
                 let newID = (hist.last?.id ?? -1) + 1
-                hist.append(AppMetricPoint(id: newID, cpu: cpu, power: power))
+                hist.append(AppMetricPoint(id: newID, time: Date(), cpu: cpu, power: power))
                 if hist.count > self.maxHistory { hist.removeFirst() }
                 self.appHistory[appName] = hist
             }
@@ -325,7 +326,7 @@ class BatteryMonitor: ObservableObject {
                 if $0.energyImpact != $1.energyImpact { return $0.energyImpact > $1.energyImpact }
                 return $0.cpuUsage > $1.cpuUsage
             }
-            self.topEnergyApps = Array(apps.prefix(5))
+            self.topEnergyApps = Array(apps.prefix(8))
             self.totalEnergyImpact = apps.reduce(0) { $0 + $1.energyImpact }
         }
     }
