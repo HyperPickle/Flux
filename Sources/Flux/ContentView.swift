@@ -292,6 +292,18 @@ struct ContentView: View {
     @ObservedObject var monitor: BatteryMonitor
     @Environment(\.colorScheme) private var colorScheme
     @State private var expandedApp: String? = nil
+    @State private var showAllProcesses: Bool = false
+    @AppStorage("appOpacity") private var appOpacity: Double = 1.0
+
+    var displayedApps: [AppEnergyUsage] {
+        if showAllProcesses {
+            return monitor.topEnergyApps
+        } else {
+            return monitor.topEnergyApps.filter {
+                HeatLevel(power: $0.energyImpact, cpu: $0.cpuUsage) != .low
+            }
+        }
+    }
 
     var chartColor: Color {
         if monitor.isCharging { return Color(hue: 0.45, saturation: 0.8, brightness: 0.9) }
@@ -388,38 +400,69 @@ struct ContentView: View {
             // ── Processes ───────────────────────────────────────────
             Divider().padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
 
-            Text("Process Overview")
-                .font(.system(size: 9, weight: .bold)).foregroundColor(.secondary).textCase(
-                    .uppercase
-                ).tracking(0.5)
-                .padding(.horizontal, 16).padding(.bottom, 8)
+            Button(action: {
+                showAllProcesses.toggle()
+            }) {
+                HStack(spacing: 4) {
+                    Text("Process Overview")
+                        .font(.system(size: 9, weight: .bold))
+                        .textCase(.uppercase)
+                        .tracking(0.5)
 
-            if !monitor.topEnergyApps.isEmpty {
-                VStack(spacing: 6) {
-                    ForEach(monitor.topEnergyApps) { app in
-                        AppCard(
-                            app: app,
-                            isExpanded: expandedApp == app.appName,
-                            onTap: {
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                    expandedApp = (expandedApp == app.appName) ? nil : app.appName
-                                }
-                            }
-                        )
-                    }
+                    Image(systemName: showAllProcesses ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 7, weight: .bold))
+                    
+                    Spacer()
                 }
-                .padding(.horizontal, 16)
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView().scaleEffect(0.8)
-                    Text("Starting Stream...").font(.system(size: 10)).foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity).padding(.vertical, 30)
+                .foregroundColor(.secondary)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 16).padding(.bottom, 8)
+
+            VStack(spacing: 6) {
+                if !monitor.topEnergyApps.isEmpty {
+                    // Filtered count check
+                    let highImpactApps = monitor.topEnergyApps.filter { HeatLevel(power: $0.energyImpact, cpu: $0.cpuUsage) != .low }
+                    
+                    if !showAllProcesses && highImpactApps.isEmpty {
+                        Text("No high-impact processes")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 20)
+                    } else {
+                        // Use original list to keep view identities stable, hide/show as needed
+                        ForEach(monitor.topEnergyApps) { app in
+                            if showAllProcesses || HeatLevel(power: app.energyImpact, cpu: app.cpuUsage) != .low {
+                                AppCard(
+                                    app: app,
+                                    isExpanded: expandedApp == app.appName,
+                                    onTap: {
+                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                            expandedApp = (expandedApp == app.appName) ? nil : app.appName
+                                        }
+                                    }
+                                )
+                                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                            }
+                        }
+                    }
+                } else {
+                    VStack(spacing: 12) {
+                        ProgressView().scaleEffect(0.8)
+                        Text("Starting Stream...").font(.system(size: 10)).foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity).padding(.vertical, 30)
+                }
+            }
+            .padding(.horizontal, 16)
+            .animation(.easeInOut(duration: 0.2), value: showAllProcesses)
 
             Color.clear.frame(height: 16)
         }
         .frame(width: 280)
+        .opacity(appOpacity)
     }
 
     private var statusText: String {
@@ -470,7 +513,7 @@ struct AppCard: View {
         return history.map { pt in
             pEma += alpha * (pt.power - pEma)
             cEma += alpha * (pt.cpu - cEma)
-            return AppMetricPoint(id: pt.id, cpu: cEma, power: pEma)
+            return AppMetricPoint(id: pt.id, time: pt.time, cpu: cEma, power: pEma)
         }
     }
 
@@ -491,10 +534,10 @@ struct AppCard: View {
                     Spacer()
                     if smoothedHistory.count >= 2 {
                         Chart(smoothedHistory) { pt in
-                            LineMark(x: .value("x", pt.id), y: .value("y", pt.power))
+                            LineMark(x: .value("Time", pt.time), y: .value("y", pt.power))
                                 .interpolationMethod(.monotone)
                                 .foregroundStyle(heat.color)
-                            AreaMark(x: .value("x", pt.id), y: .value("y", pt.power))
+                            AreaMark(x: .value("Time", pt.time), y: .value("y", pt.power))
                                 .interpolationMethod(.monotone)
                                 .foregroundStyle(
                                     LinearGradient(
@@ -556,10 +599,10 @@ struct AppDetailView: View {
             HStack(alignment: .center, spacing: 12) {
                 if smoothedHistory.count >= 2 {
                     Chart(smoothedHistory) { pt in
-                        LineMark(x: .value("x", pt.id), y: .value("y", pt.cpu))
+                        LineMark(x: .value("Time", pt.time), y: .value("y", pt.cpu))
                             .interpolationMethod(.monotone)
                             .foregroundStyle(heat.color)
-                        AreaMark(x: .value("x", pt.id), y: .value("y", pt.cpu))
+                        AreaMark(x: .value("Time", pt.time), y: .value("y", pt.cpu))
                             .interpolationMethod(.monotone)
                             .foregroundStyle(
                                 LinearGradient(

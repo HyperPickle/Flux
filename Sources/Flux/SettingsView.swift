@@ -42,6 +42,7 @@ struct SettingsView: View {
     @AppStorage("menuBarStyle") private var menuBarStyle: MenuBarStyle = .iconOnly
     @AppStorage("updateInterval") private var updateInterval: UpdateIntervalSetting = .normal
     @AppStorage("graphZoomDefault") private var graphZoomDefault: GraphHistoryZoom = .oneHour
+    @AppStorage("appOpacity") private var appOpacity: Double = 1.0
     
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     
@@ -72,6 +73,19 @@ struct SettingsView: View {
                     ForEach(UpdateIntervalSetting.allCases) { interval in
                         Text(interval.label).tag(interval)
                     }
+                }
+            }
+
+            Section(header: Text("Appearance")) {
+                VStack(alignment: .leading) {
+                    HStack {
+                        Text("Window Transparency")
+                        Spacer()
+                        Text("\(Int(appOpacity * 100))%")
+                            .foregroundColor(.secondary)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    Slider(value: $appOpacity, in: 0.1...1.0)
                 }
             }
             
