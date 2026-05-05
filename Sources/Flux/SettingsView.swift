@@ -76,16 +76,18 @@ struct SettingsView: View {
                 }
             }
 
-            Section(header: Text("Appearance")) {
-                VStack(alignment: .leading) {
+            Section(header: Text("Appearance").padding(.top, 10)) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Window Opacity")
+                    
                     HStack {
-                        Text("Window Transparency")
-                        Spacer()
+                        Slider(value: $appOpacity, in: 0.1...1.0)
+                        
                         Text("\(Int(appOpacity * 100))%")
                             .foregroundColor(.secondary)
                             .font(.system(.body, design: .monospaced))
+                            .frame(width: 45, alignment: .trailing)
                     }
-                    Slider(value: $appOpacity, in: 0.1...1.0)
                 }
             }
             
