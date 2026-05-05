@@ -317,152 +317,159 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // ── Header ───────────────────────────────────────────────
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(monitor.batteryLevel)%")
-                            .font(.system(size: 44, weight: .bold, design: .rounded))
-                            .foregroundStyle(chartColor)
+        ZStack {
+            // ── Background Layer (Dynamic Opacity) ──────────────────
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .opacity(appOpacity)
+                .ignoresSafeArea()
+            
+            VStack(alignment: .leading, spacing: 0) {
+                // ── Header ───────────────────────────────────────────────
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(monitor.batteryLevel)%")
+                                .font(.system(size: 44, weight: .bold, design: .rounded))
+                                .foregroundStyle(chartColor)
 
-                        if monitor.isCharging {
-                            Image(systemName: "bolt.fill")
-                                .font(.title3)
-                                .foregroundColor(chartColor)
-                                .offset(y: -10)
-                        }
-                    }
-                    Text(statusText)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .offset(y: -4)
-                }
-                Spacer()
-
-                HStack(spacing: 12) {
-                    if #available(macOS 14.0, *) {
-                        SettingsLink {
-                            Image(systemName: "gearshape.fill")
-                                .font(.title3)
-                                .foregroundStyle(.secondary.opacity(0.4))
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Button(action: {
-                            NSApp.activate(ignoringOtherApps: true)
-                            if #available(macOS 13.0, *) {
-                                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                            } else {
-                                NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                            if monitor.isCharging {
+                                Image(systemName: "bolt.fill")
+                                    .font(.title3)
+                                    .foregroundColor(chartColor)
+                                    .offset(y: -10)
                             }
-                        }) {
-                            Image(systemName: "gearshape.fill")
-                                .font(.title3)
-                                .foregroundStyle(.secondary.opacity(0.4))
                         }
-                        .buttonStyle(.plain)
-                    }
-
-                    Button(action: { NSApplication.shared.terminate(nil) }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(.secondary.opacity(0.4))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-
-            // ── System Metrics Row ──────────────────────────────────
-            HStack(spacing: 8) {
-                let cpuColor = getCPUColor(monitor.systemCPUValue)
-                MetricPill(label: "CPU", value: monitor.systemCPU, icon: "cpu", color: cpuColor)
-                let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
-                MetricPill(label: "DRAIN", value: drain.label, icon: "bolt", color: drain.color)
-                
-                let memColor: Color = monitor.memoryPressureState == 0 ? .green : (monitor.memoryPressureState == 1 ? .orange : .red)
-                MetricPill(label: "RAM", value: monitor.memoryPressure, icon: "memorychip", color: memColor)
-            }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 14)
-
-            // ── Battery chart ────────────────────────────────────────
-            InteractiveBatteryChart(
-                monitor: monitor,
-                chartColor: chartColor,
-                unknownLineColor: unknownLineColor
-            )
-            .padding(.horizontal, 16)
-
-            // ── Processes ───────────────────────────────────────────
-            Divider().padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
-
-            Button(action: {
-                showAllProcesses.toggle()
-            }) {
-                HStack(spacing: 4) {
-                    Text("Process Overview")
-                        .font(.system(size: 9, weight: .bold))
-                        .textCase(.uppercase)
-                        .tracking(0.5)
-
-                    Image(systemName: showAllProcesses ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 7, weight: .bold))
-                    
-                    Spacer()
-                }
-                .foregroundColor(.secondary)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 16).padding(.bottom, 8)
-
-            VStack(spacing: 6) {
-                if !monitor.topEnergyApps.isEmpty {
-                    // Filtered count check
-                    let highImpactApps = monitor.topEnergyApps.filter { HeatLevel(power: $0.energyImpact, cpu: $0.cpuUsage) != .low }
-                    
-                    if !showAllProcesses && highImpactApps.isEmpty {
-                        Text("No high-impact processes")
-                            .font(.system(size: 10))
+                        Text(statusText)
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 20)
-                    } else {
-                        // Use original list to keep view identities stable, hide/show as needed
-                        ForEach(monitor.topEnergyApps) { app in
-                            if showAllProcesses || HeatLevel(power: app.energyImpact, cpu: app.cpuUsage) != .low {
-                                AppCard(
-                                    app: app,
-                                    isExpanded: expandedApp == app.appName,
-                                    onTap: {
-                                        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                                            expandedApp = (expandedApp == app.appName) ? nil : app.appName
+                            .offset(y: -4)
+                    }
+                    Spacer()
+
+                    HStack(spacing: 12) {
+                        if #available(macOS 14.0, *) {
+                            SettingsLink {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary.opacity(0.4))
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            Button(action: {
+                                NSApp.activate(ignoringOtherApps: true)
+                                if #available(macOS 13.0, *) {
+                                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                                } else {
+                                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                                }
+                            }) {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(.secondary.opacity(0.4))
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Button(action: { NSApplication.shared.terminate(nil) }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.secondary.opacity(0.4))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+
+                // ── System Metrics Row ──────────────────────────────────
+                HStack(spacing: 8) {
+                    let cpuColor = getCPUColor(monitor.systemCPUValue)
+                    MetricPill(label: "CPU", value: monitor.systemCPU, icon: "cpu", color: cpuColor)
+                    let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
+                    MetricPill(label: "DRAIN", value: drain.label, icon: "bolt", color: drain.color)
+                    
+                    let memColor: Color = monitor.memoryPressureState == 0 ? .green : (monitor.memoryPressureState == 1 ? .orange : .red)
+                    MetricPill(label: "RAM", value: monitor.memoryPressure, icon: "memorychip", color: memColor)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+                // ── Battery chart ────────────────────────────────────────
+                InteractiveBatteryChart(
+                    monitor: monitor,
+                    chartColor: chartColor,
+                    unknownLineColor: unknownLineColor
+                )
+                .padding(.horizontal, 16)
+
+                // ── Processes ───────────────────────────────────────────
+                Divider().padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+
+                Button(action: {
+                    showAllProcesses.toggle()
+                }) {
+                    HStack(spacing: 4) {
+                        Text("Process Overview")
+                            .font(.system(size: 9, weight: .bold))
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+
+                        Image(systemName: showAllProcesses ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 7, weight: .bold))
+                        
+                        Spacer()
+                    }
+                    .foregroundColor(.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16).padding(.bottom, 8)
+
+                VStack(spacing: 6) {
+                    if !monitor.topEnergyApps.isEmpty {
+                        // Filtered count check
+                        let highImpactApps = monitor.topEnergyApps.filter { HeatLevel(power: $0.energyImpact, cpu: $0.cpuUsage) != .low }
+                        
+                        if !showAllProcesses && highImpactApps.isEmpty {
+                            Text("No high-impact processes")
+                                .font(.system(size: 10))
+                                .foregroundColor(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 20)
+                        } else {
+                            // Use original list to keep view identities stable, hide/show as needed
+                            ForEach(monitor.topEnergyApps) { app in
+                                if showAllProcesses || HeatLevel(power: app.energyImpact, cpu: app.cpuUsage) != .low {
+                                    AppCard(
+                                        app: app,
+                                        isExpanded: expandedApp == app.appName,
+                                        onTap: {
+                                            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                                                expandedApp = (expandedApp == app.appName) ? nil : app.appName
+                                            }
                                         }
-                                    }
-                                )
-                                .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                                    )
+                                    .transition(.opacity)
+                                }
                             }
                         }
+                    } else {
+                        VStack(spacing: 12) {
+                            ProgressView().scaleEffect(0.8)
+                            Text("Starting Stream...").font(.system(size: 10)).foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity).padding(.vertical, 30)
                     }
-                } else {
-                    VStack(spacing: 12) {
-                        ProgressView().scaleEffect(0.8)
-                        Text("Starting Stream...").font(.system(size: 10)).foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 30)
                 }
-            }
-            .padding(.horizontal, 16)
-            .animation(.easeInOut(duration: 0.2), value: showAllProcesses)
+                .padding(.horizontal, 16)
+                .animation(.easeInOut(duration: 0.2), value: showAllProcesses)
 
-            Color.clear.frame(height: 16)
+                Color.clear.frame(height: 16)
+            }
         }
         .frame(width: 280)
-        .opacity(appOpacity)
     }
 
     private var statusText: String {
