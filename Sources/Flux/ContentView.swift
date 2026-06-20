@@ -4,6 +4,37 @@ import Foundation
 import IOKit.ps
 import SwiftUI
 
+private extension Color {
+    static let fluxGreen = adaptive(
+        light: NSColor(srgbRed: 0.03, green: 0.53, blue: 0.25, alpha: 1),
+        dark: NSColor(srgbRed: 0.19, green: 0.82, blue: 0.35, alpha: 1)
+    )
+    static let fluxYellow = adaptive(
+        light: NSColor(srgbRed: 0.59, green: 0.44, blue: 0.00, alpha: 1),
+        dark: NSColor(srgbRed: 1.00, green: 0.84, blue: 0.04, alpha: 1)
+    )
+    static let fluxOrange = adaptive(
+        light: NSColor(srgbRed: 0.77, green: 0.24, blue: 0.00, alpha: 1),
+        dark: NSColor(srgbRed: 1.00, green: 0.62, blue: 0.04, alpha: 1)
+    )
+    static let fluxRed = adaptive(
+        light: NSColor(srgbRed: 0.82, green: 0.10, blue: 0.16, alpha: 1),
+        dark: NSColor(srgbRed: 1.00, green: 0.27, blue: 0.23, alpha: 1)
+    )
+    static let fluxCharging = adaptive(
+        light: NSColor(srgbRed: 0.00, green: 0.51, blue: 0.41, alpha: 1),
+        dark: NSColor(srgbRed: 0.10, green: 0.90, blue: 0.64, alpha: 1)
+    )
+
+    static func adaptive(light: NSColor, dark: NSColor) -> Color {
+        Color(
+            nsColor: NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+            }
+        )
+    }
+}
+
 // MARK: - Battery chart data
 struct BatteryDataPoint: Identifiable, Codable, Equatable {
     let id: Int
@@ -31,17 +62,17 @@ enum DrainLevel {
     var label: String {
         switch self {
         case .low: return "Low Drain"
-        case .medium: return "Moderate"
+        case .medium: return "Moderate Drain"
         case .high: return "High Drain"
-        case .extreme: return "Extreme"
+        case .extreme: return "Extreme Drain"
         }
     }
     var color: Color {
         switch self {
-        case .low: return .green
-        case .medium: return .yellow
-        case .high: return .orange
-        case .extreme: return .red
+        case .low: return .fluxGreen
+        case .medium: return .fluxYellow
+        case .high: return .fluxOrange
+        case .extreme: return .fluxRed
         }
     }
 }
@@ -78,17 +109,17 @@ enum HeatLevel {
     var color: Color {
         switch self {
         case .low: return .secondary
-        case .medium: return Color(hue: 0.11, saturation: 0.85, brightness: 0.9)
-        case .high: return .orange
-        case .critical: return .red
+        case .medium: return .fluxYellow
+        case .high: return .fluxOrange
+        case .critical: return .fluxRed
         }
     }
-    var cardTint: Color {
+    func cardTint(for colorScheme: ColorScheme) -> Color {
         switch self {
-        case .low: return Color.primary.opacity(0.04)
-        case .medium: return Color.yellow.opacity(0.07)
-        case .high: return Color.orange.opacity(0.08)
-        case .critical: return Color.red.opacity(0.08)
+        case .low: return Color.primary.opacity(colorScheme == .light ? 0.06 : 0.04)
+        case .medium: return Color.fluxYellow.opacity(colorScheme == .light ? 0.16 : 0.07)
+        case .high: return Color.fluxOrange.opacity(colorScheme == .light ? 0.15 : 0.08)
+        case .critical: return Color.fluxRed.opacity(colorScheme == .light ? 0.14 : 0.08)
         }
     }
 }
@@ -240,7 +271,7 @@ struct InteractiveBatteryChart: View {
                     Spacer()
                     Text("\(Int(zoomHours))h")
                         .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundColor(.secondary.opacity(0.5))
+                        .foregroundColor(.secondary)
                         .padding(.trailing, 4)
                         .padding(.bottom, 2)
                 }
@@ -264,7 +295,7 @@ struct InteractiveBatteryChart: View {
                     RoundedRectangle(cornerRadius: 7).strokeBorder(
                         chartColor.opacity(0.25), lineWidth: 1)
                 )
-                .offset(x: min(max(tooltipX - 28, 0), 210), y: tooltipY > 30 ? -2 : 30)
+                .offset(x: min(max(tooltipX - 28, 0), 235), y: tooltipY > 30 ? -2 : 30)
                 .allowsHitTesting(false)
             }
         }
@@ -307,10 +338,10 @@ struct ContentView: View {
     }
 
     var chartColor: Color {
-        if monitor.isCharging { return Color(hue: 0.45, saturation: 0.8, brightness: 0.9) }
-        if monitor.batteryLevel <= 20 { return .red }
-        if monitor.batteryLevel <= 40 { return .orange }
-        return .green
+        if monitor.isCharging { return .fluxCharging }
+        if monitor.batteryLevel <= 20 { return .fluxRed }
+        if monitor.batteryLevel <= 40 { return .fluxOrange }
+        return .fluxGreen
     }
 
     var unknownLineColor: Color {
@@ -353,10 +384,11 @@ struct ContentView: View {
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundColor(.secondary)
                             if monitor.batteryWatts > 0 {
-                                Text(monitor.isCharging ? "·" : "–")
+                                Text("•")
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.secondary.opacity(0.5))
-                                Text(String(format: "%.1fW", monitor.batteryWatts))
+                                    .foregroundColor(.secondary)
+                                Text(String(format: "%.1fW %@", monitor.batteryWatts,
+                                            monitor.isCharging ? "input" : "drain"))
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(.secondary)
                             }
@@ -373,35 +405,37 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "gearshape.fill")
                                 .font(.title3)
-                                .foregroundStyle(.secondary.opacity(0.4))
+                                .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
 
                         Button(action: { NSApplication.shared.terminate(nil) }) {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.title3)
-                                .foregroundStyle(.secondary.opacity(0.4))
+                                .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.top, 16)
                 .padding(.bottom, 8)
 
                 // ── System Metrics Row ──────────────────────────────────
                 HStack(spacing: 8) {
-                    let cpuColor = getCPUColor(monitor.systemCPUValue)
-                    MetricPill(label: "CPU", value: monitor.systemCPU, icon: "cpu", color: cpuColor)
+                    let cpuColor = getCPUColor(monitor.systemCPUSys)
+                    MetricPill(label: "CPU", value: String(format: "KERNEL %.0f%%", monitor.systemCPUSys),
+                               icon: "cpu", color: cpuColor)
                     let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
                     MetricPill(label: "DRAIN", value: drain.label, icon: "bolt", color: drain.color)
                     if let temp = monitor.cpuTemperature {
-                        let tempColor: Color = temp < 60 ? .green : temp < 80 ? .yellow : .red
+                        let tempColor: Color =
+                            temp < 55 ? .fluxGreen : temp < 75 ? .fluxYellow : .fluxRed
                         MetricPill(label: "TEMP", value: String(format: "%.0f°C", temp),
                                    icon: "thermometer.medium", color: tempColor)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.bottom, 14)
 
                 // ── Battery chart ────────────────────────────────────────
@@ -410,10 +444,10 @@ struct ContentView: View {
                     chartColor: chartColor,
                     unknownLineColor: unknownLineColor
                 )
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
 
                 // ── Processes ───────────────────────────────────────────
-                Divider().padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+                Divider().padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 10)
 
                 Button(action: {
                     showAllProcesses.toggle()
@@ -426,14 +460,39 @@ struct ContentView: View {
 
                         Image(systemName: showAllProcesses ? "chevron.up" : "chevron.down")
                             .font(.system(size: 7, weight: .bold))
-                        
+
                         Spacer()
+
+                        let userColor = getCPUColor(monitor.systemCPUUser)
+                        HStack(spacing: 4) {
+                            Image(systemName: "cpu")
+                                .font(.system(size: 8))
+                            Text("User")
+                                .textCase(.uppercase)
+                                .tracking(0.5)
+                            Text(String(format: "%.0f%%", monitor.systemCPUUser))
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                        }
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(userColor)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 7).fill(.ultraThinMaterial)
+                                RoundedRectangle(cornerRadius: 7).fill(
+                                    userColor.opacity(colorScheme == .light ? 0.16 : 0.10))
+                            }
+                        }
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7).strokeBorder(
+                                userColor.opacity(colorScheme == .light ? 0.32 : 0.20),
+                                lineWidth: 0.75))
                     }
                     .foregroundColor(.secondary)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 16).padding(.bottom, 8)
+                .padding(.horizontal, 18).padding(.bottom, 8)
 
                 VStack(spacing: 6) {
                     if !monitor.topEnergyApps.isEmpty {
@@ -466,12 +525,12 @@ struct ContentView: View {
                     } else {
                         VStack(spacing: 12) {
                             ProgressView().scaleEffect(0.8)
-                            Text("Starting Stream...").font(.system(size: 10)).foregroundColor(.secondary)
+                            Text("Calculating...").font(.system(size: 10)).foregroundColor(.secondary)
                         }
                         .frame(maxWidth: .infinity).padding(.vertical, 30)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .animation(.easeInOut(duration: 0.2), value: showAllProcesses)
 
                 Color.clear.frame(height: 16)
@@ -481,7 +540,13 @@ struct ContentView: View {
             }
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showSettings)
         }
-        .frame(width: 280)
+        .frame(width: 308)
+        .onAppear {
+            monitor.setDetailsVisible(true)
+        }
+        .onDisappear {
+            monitor.setDetailsVisible(false)
+        }
     }
 
     private var statusText: String {
@@ -495,13 +560,14 @@ struct ContentView: View {
     }
 
     private func getCPUColor(_ val: Double) -> Color {
-        if val < 35 { return .green }
-        if val < 75 { return .yellow }
-        return .red
+        if val < 35 { return .fluxGreen }
+        if val < 75 { return .fluxYellow }
+        return .fluxRed
     }
 }
 
 struct MetricPill: View {
+    @Environment(\.colorScheme) private var colorScheme
     let label: String
     let value: String
     let icon: String
@@ -510,37 +576,32 @@ struct MetricPill: View {
         HStack(spacing: 4) {
             Image(systemName: icon).font(.system(size: 8))
             Text(value).font(.system(size: 9, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .foregroundColor(color)
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 7).fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: 7).fill(color.opacity(0.10))
+                RoundedRectangle(cornerRadius: 7).fill(
+                    color.opacity(colorScheme == .light ? 0.16 : 0.10))
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(color.opacity(0.20), lineWidth: 0.75))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7).strokeBorder(
+                color.opacity(colorScheme == .light ? 0.32 : 0.20), lineWidth: 0.75))
     }
 }
 
 struct AppCard: View {
+    @Environment(\.colorScheme) private var colorScheme
     let app: AppEnergyUsage
     let isExpanded: Bool
     let onTap: () -> Void
     private var heat: HeatLevel { HeatLevel(power: app.energyImpact, cpu: app.cpuUsage) }
     
-    private var smoothedHistory: [AppMetricPoint] {
-        let history = app.history
-        guard !history.isEmpty else { return [] }
-        let alpha = 0.15
-        var pEma = history[0].power
-        var cEma = history[0].cpu
-        return history.map { pt in
-            pEma += alpha * (pt.power - pEma)
-            cEma += alpha * (pt.cpu - cEma)
-            return AppMetricPoint(id: pt.id, time: pt.time, cpu: cEma, power: pEma)
-        }
-    }
+    private var smoothedHistory: [AppMetricPoint] { app.smoothedHistory }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -550,8 +611,12 @@ struct AppCard: View {
                         Image(nsImage: icon).resizable().frame(width: 20, height: 20).clipShape(
                             RoundedRectangle(cornerRadius: 4))
                     } else {
-                        Image(systemName: "app.fill").frame(width: 20, height: 20).foregroundColor(
-                            .secondary)
+                        // Background/system processes have no app icon — show a terminal
+                        // glyph sized to match the 20×20 app logos.
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 15))
+                            .frame(width: 20, height: 20)
+                            .foregroundColor(.secondary)
                     }
                     Text(app.appName).font(.system(size: 11, weight: .medium)).foregroundColor(
                         .primary
@@ -604,9 +669,10 @@ struct AppCard: View {
             }
         }
         .clipped()
-        .background(RoundedRectangle(cornerRadius: 8).fill(heat.cardTint))
+        .background(RoundedRectangle(cornerRadius: 8).fill(heat.cardTint(for: colorScheme)))
         .overlay(
-            RoundedRectangle(cornerRadius: 8).strokeBorder(heat.color.opacity(0.12), lineWidth: 1))
+            RoundedRectangle(cornerRadius: 8).strokeBorder(
+                heat.color.opacity(colorScheme == .light ? 0.24 : 0.12), lineWidth: 1))
     }
 }
 

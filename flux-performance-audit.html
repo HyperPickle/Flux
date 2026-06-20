@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flux — Performance &amp; Accuracy Audit</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c232d; --line:#283039;
+    --text:#e6edf3; --muted:#9aa7b4; --faint:#6b7884;
+    --green:#3fb950; --yellow:#d29922; --orange:#db8a3c; --red:#f85149;
+    --blue:#58a6ff; --purple:#bc8cff; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.6;font-size:15px}
+  .wrap{max-width:980px;margin:0 auto;padding:48px 28px 96px}
+  header.title{border-bottom:1px solid var(--line);padding-bottom:24px;margin-bottom:36px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:-.5px}
+  .sub{color:var(--muted);font-size:14px}
+  .meta{color:var(--faint);font-size:12px;margin-top:10px;font-family:var(--mono)}
+  h2{font-size:22px;margin:48px 0 4px;letter-spacing:-.3px}
+  h2 .num{color:var(--blue);font-family:var(--mono);font-size:18px;margin-right:8px}
+  h3{font-size:16px;margin:30px 0 6px}
+  p{margin:10px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel2);
+    padding:2px 6px;border-radius:5px;color:#d6e2ee}
+  pre{background:#0a0d12;border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+  pre .c{color:var(--faint)}
+  pre .k{color:var(--purple)}
+  pre .s{color:#7ee787}
+  pre .hl{color:var(--red);font-weight:600}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:20px 22px;margin:18px 0}
+  .lead{background:linear-gradient(180deg,#172029,#141a21);border:1px solid var(--line);
+    border-radius:12px;padding:22px 24px;margin:8px 0 0}
+  .lead p{margin:8px 0}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:18px 0}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .kpi .v{font-size:24px;font-weight:700;font-family:var(--mono)}
+  .kpi .l{color:var(--muted);font-size:12.5px;margin-top:2px}
+  .finding{border:1px solid var(--line);border-radius:12px;margin:20px 0;overflow:hidden}
+  .finding .head{display:flex;align-items:center;gap:12px;padding:14px 18px;
+    background:var(--panel2);border-bottom:1px solid var(--line)}
+  .finding .head .id{font-family:var(--mono);color:var(--faint);font-size:13px}
+  .finding .head .t{font-weight:600;font-size:15.5px;flex:1}
+  .finding .body{padding:16px 18px}
+  .finding .body p:first-child{margin-top:0}
+  .sev{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+    padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .sev.crit{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.4)}
+  .sev.high{background:rgba(219,138,60,.15);color:var(--orange);border:1px solid rgba(219,138,60,.4)}
+  .sev.med{background:rgba(210,153,34,.15);color:var(--yellow);border:1px solid rgba(210,153,34,.4)}
+  .sev.low{background:rgba(63,185,80,.13);color:var(--green);border:1px solid rgba(63,185,80,.4)}
+  .tag{font-size:11px;font-family:var(--mono);color:var(--faint);
+    border:1px solid var(--line);border-radius:6px;padding:2px 7px}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  td code{font-size:.92em}
+  .ref{font-family:var(--mono);font-size:12px;color:var(--blue)}
+  ul.tight{margin:8px 0;padding-left:22px}
+  ul.tight li{margin:5px 0}
+  .why{border-left:3px solid var(--blue);padding:4px 0 4px 14px;margin:14px 0;color:var(--text)}
+  .why b{color:var(--blue)}
+  .verdict{border-left:3px solid var(--green);padding:4px 0 4px 14px;margin:14px 0}
+  .callout{background:rgba(88,166,255,.07);border:1px solid rgba(88,166,255,.25);
+    border-radius:10px;padding:14px 18px;margin:16px 0}
+  .callout b{color:var(--blue)}
+  .pri{font-family:var(--mono);font-weight:700}
+  .pri.p0{color:var(--red)} .pri.p1{color:var(--orange)} .pri.p2{color:var(--yellow)} .pri.p3{color:var(--faint)}
+  footer{margin-top:60px;padding-top:20px;border-top:1px solid var(--line);
+    color:var(--faint);font-size:12.5px}
+  a{color:var(--blue)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:12.5px;margin:10px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="title">
+  <h1>Flux — Performance &amp; Accuracy Audit</h1>
+  <div class="sub">A code-level deep dive into process-energy accuracy and the app&rsquo;s own resource footprint.</div>
+  <div class="meta">Scope: Sources/Flux/*.swift &nbsp;·&nbsp; 1,876 LOC &nbsp;·&nbsp; Audit date 2026-06-20 &nbsp;·&nbsp; branch main</div>
+</header>
+
+<!-- ============ EXEC SUMMARY ============ -->
+<div class="lead">
+  <p style="margin-top:0"><b>Two questions were investigated:</b></p>
+  <p><b style="color:var(--blue)">1. Why does Flux under-report processes that macOS flags as high-energy?</b><br>
+  Because Flux and macOS measure <em>different things over different time windows</em>. Flux ranks processes by <code>top</code>&rsquo;s instantaneous 5-second <code>POWER</code> column; macOS Battery settings ranks by a <em>sustained, coalition-aggregated</em> energy average over hours. On top of that, a name-matching bug makes whole categories of heavy work — most notably <b>every Safari / WebKit tab</b> — invisible to Flux.</p>
+  <p><b style="color:var(--orange)">2. Why does Flux sometimes rank <em>itself</em> as medium impact?</b><br>
+  Flux continuously runs a child <code>top</code> process every 5&nbsp;s and parses all ~970 process lines on this machine, hopping to the main actor several times <em>per line</em>. That CPU cost — plus the child <code>top</code>&rsquo;s own cost, which macOS rolls into Flux&rsquo;s coalition — is real and self-inflicted. The good news: it is almost entirely fixable without changing what the app shows.</p>
+</div>
+
+<div class="grid">
+  <div class="kpi"><div class="v" style="color:var(--red)">2</div><div class="l">Critical accuracy defects (Safari/WebKit blind spot; window mismatch)</div></div>
+  <div class="kpi"><div class="v" style="color:var(--orange)">~970×3</div><div class="l">Main-actor hops every 5&nbsp;s while parsing <code>top</code> on this machine</div></div>
+  <div class="kpi"><div class="v" style="color:var(--yellow)">5&nbsp;s</div><div class="l"><code>top -l 0 -s 5</code> wake-up cadence — the dominant battery cost</div></div>
+  <div class="kpi"><div class="v" style="color:var(--green)">P0–P3</div><div class="l">Prioritized fixes at the end; most are low-risk</div></div>
+</div>
+
+<!-- ============ METHODOLOGY ============ -->
+<h2><span class="num">§0</span>How Flux measures energy today</h2>
+<p>All process data comes from a single long-lived child process spawned in <code class="ref">BatteryMonitor.startTopStream()</code>:</p>
+<pre><span class="c">// BatteryMonitor.swift:258–260</span>
+process.executableURL = URL(fileURLWithPath: <span class="s">"/usr/bin/top"</span>)
+process.arguments = [<span class="s">"-l"</span>, <span class="s">"0"</span>, <span class="s">"-s"</span>, <span class="s">"5"</span>,
+                     <span class="s">"-stats"</span>, <span class="s">"pid,command,cpu,power,mem"</span>, <span class="s">"-o"</span>, <span class="s">"cpu"</span>]</pre>
+<p>Every 5 seconds <code>top</code> emits a full frame; <code class="ref">parseTopLine()</code> reads it line-by-line, attributes each process row to a running application by <b>name substring matching</b>, sums <code>POWER</code>/<code>CPU</code>/<code>MEM</code> per app, and the top 8 become <code>topEnergyApps</code>. The colored "Low/Medium/High/Critical" badge is derived in <code class="ref">HeatLevel.init(power:cpu:)</code> from that <code>POWER</code> value (falling back to CPU when power is 0).</p>
+<div class="callout">
+<b>The core conceptual gap.</b> <code>top</code>&rsquo;s <code>POWER</code> column is an <em>instantaneous</em> energy-impact score for the last sample interval. The macOS Battery pane&rsquo;s &ldquo;Apps Using Significant Energy&rdquo; is a <em>sustained average</em> over a long window (since last charge / multi-hour), aggregated across each app&rsquo;s entire process <em>coalition</em> (parent + all helpers + XPC children). Flux compares a snapshot against macOS&rsquo;s long exposure — they will routinely disagree even when both are working correctly.
+</div>
+
+<!-- ============ PART 1: ACCURACY ============ -->
+<h2><span class="num">§1</span>Accuracy of high-usage process monitoring</h2>
+<p class="legend">
+  <span><span class="sev crit">Critical</span> wrong/missing data</span>
+  <span><span class="sev high">High</span> materially misleading</span>
+  <span><span class="sev med">Medium</span> noticeable skew</span>
+  <span><span class="sev low">Low</span> minor</span>
+</p>
+
+<div class="finding">
+  <div class="head"><span class="id">A1</span><span class="t">Safari &amp; all WebKit content is completely invisible</span><span class="sev crit">Critical</span></div>
+  <div class="body">
+    <p>This is the single most likely explanation for &ldquo;macOS shows process X as significant but Flux shows it low.&rdquo;</p>
+    <p>Safari does its real work in helper processes named <code>com.apple.WebKit.WebContent</code>, <code>com.apple.WebKit.GPU</code>, <code>com.apple.WebKit.Networking</code>. <b>None of these strings contain &ldquo;Safari&rdquo;,</b> so the app-matching loop never attributes them to Safari:</p>
+<pre><span class="c">// BatteryMonitor.swift:337–342  — substring match against app names</span>
+for appName in appNames {
+    if commandName.localizedCaseInsensitiveContains(appName) ||
+       appName.localizedCaseInsensitiveContains(commandName...) {
+            matchedApp = appName; break
+    }
+}</pre>
+    <p>With no match, the row falls through to the background-process branch — which then <b>explicitly drops everything Apple-owned:</b></p>
+<pre><span class="c">// BatteryMonitor.swift:349–351</span>
+let blocked = backgroundProcessBlockList.contains(lower)
+    || lower.hasPrefix(<span class="s">"com.apple."</span>)   <span class="hl">// ← kills WebKit content procs</span>
+    || lower.hasPrefix(<span class="s">"com.google."</span>)</pre>
+    <p>Net effect: a Safari tab pegging a CPU core contributes <b>zero</b> to Flux&rsquo;s Safari row and is also hidden from the background list. macOS, which aggregates the WebKit coalition under Safari, correctly shows it as significant.</p>
+    <div class="why"><b>Asymmetry worth noting:</b> Chrome <em>works</em> because its helpers are literally named <code>Google Chrome Helper (Renderer)</code> — that string contains &ldquo;Google Chrome&rdquo;, so it matches. Electron apps (Slack, VS&nbsp;Code → <code>Code Helper</code>, Discord) also match. Safari/WebKit is the conspicuous failure, and it is the system browser, so it hits a large fraction of users.</div>
+    <p><b>Fix direction:</b> attribute by process <em>coalition</em> or parent PID rather than command-name substrings. The reliable primitive is <code>proc_pid_coalitionid()</code> / the <code>proc_listcoalitions</code> family, or mapping responsible-PID via <code>responsibility_get_pid_responsible_for_pid()</code>. A cheap stopgap: special-case <code>com.apple.WebKit.*</code> → &ldquo;Safari&rdquo; and stop blanket-blocking <code>com.apple.*</code> when it carries real activity.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A2</span><span class="t">Instantaneous snapshot vs. macOS&rsquo;s sustained average</span><span class="sev crit">Critical</span></div>
+  <div class="body">
+    <p>Flux replaces <code>topEnergyApps</code> wholesale every 5 seconds with the <em>current</em> interval&rsquo;s numbers. A process that did heavy work 90 seconds ago but is idle now reads <b>Low</b> in Flux, yet macOS still lists it as a significant energy user because its multi-hour average is high. The reverse also happens (a brief spike during your glance looks alarming).</p>
+    <p>The on-card sparkline <em>does</em> retain history (<code>appHistory</code>, up to 720 points), but the <b>ranking, the Heat badge, and the Drain pill all use only the latest instantaneous sample</b> — so the headline classification has no memory.</p>
+    <div class="why"><b>Why this matters for your question:</b> even with perfect per-process data, a 5-second snapshot and an 8-hour average are different statistics. To match user intuition (&ldquo;what&rsquo;s draining my battery&rdquo;), rank by a trailing average (e.g. EMA over the last 1–5 min, which you already compute for the sparkline) instead of the last sample.</div>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A3</span><span class="t">The first <code>top</code> frame is cumulative-since-launch, not a delta</span><span class="sev high">High</span></div>
+  <div class="body">
+    <p>In logging mode (<code>-l 0</code>), <code>top</code>&rsquo;s <em>first</em> sample reports CPU/POWER accumulated since each process started; only subsequent frames are per-interval deltas. Flux parses the first frame identically to the rest (<code class="ref">BatteryMonitor.swift:315–357</code>), so for roughly the first 5 seconds after launch the energy ranking is dominated by whatever has run longest since boot — not what is busy now.</p>
+    <p><b>Fix:</b> discard the first complete frame before populating the UI (skip until the second <code>PID</code> header is seen).</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A4</span><span class="t">Substring matching produces silent mis-attribution &amp; collisions</span><span class="sev high">High</span></div>
+  <div class="body">
+    <p>The match is bidirectional <code>contains</code> with a <code>break</code> on first hit, iterating apps in <code>NSWorkspace</code> order:</p>
+    <ul class="tight">
+      <li><b>Short names collide:</b> an app named &ldquo;Code&rdquo;, &ldquo;Notes&rdquo;, or &ldquo;1&rdquo; can swallow unrelated rows whose command merely contains the substring.</li>
+      <li><b>First-match-wins is order-dependent:</b> if two running apps both match a row, the one that happens to come first in the workspace list claims the energy — non-deterministic across launches.</li>
+      <li><b>Truncation:</b> <code>top</code> clips the COMMAND column to a fixed width; long bundle names get cut, breaking the substring test intermittently.</li>
+    </ul>
+    <p><b>Fix:</b> match on PID → <code>NSRunningApplication(processIdentifier:)</code> (exact, O(1)) instead of fuzzy strings. You already have the PID in <code>parts[0]</code> and currently throw it away.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A5</span><span class="t">CPU is normalized to whole-machine percent, making single-thread hogs look small</span><span class="sev med">Medium</span></div>
+  <div class="body">
+    <p><code class="ref">BatteryMonitor.swift:331–332</code> divides raw CPU by core count: <code>cpu = rawCpu / cores</code>. A single-threaded process maxing one core on this 10-core-class machine shows as <b>~10%</b>, where Activity Monitor would show <b>~100%</b>. Combined with the <code>HeatLevel</code> CPU fallback thresholds (Low &lt;10%, Medium &lt;30%), a fully pegged single core can register as merely &ldquo;Medium&rdquo; — again reading lower than the user expects from Activity Monitor.</p>
+    <p>This is a <em>defensible design choice</em> (percent of total machine capacity), but it is a second, independent reason Flux numbers look low next to Apple&rsquo;s tools. Consider showing the Activity-Monitor-style per-core figure, or labeling the unit explicitly.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A6</span><span class="t"><code>POWER</code> is summed but treated as a unitless score; thresholds are arbitrary</span><span class="sev med">Medium</span></div>
+  <div class="body">
+    <p><code>totalEnergyImpact</code> sums <code>top</code>&rsquo;s POWER across matched apps and feeds <code class="ref">DrainLevel</code> (thresholds 20 / 60 / 150) and <code>HeatLevel</code> (5 / 20 / 50). These constants don&rsquo;t correspond to watts or any calibrated unit — they&rsquo;re tuned to <code>top</code>&rsquo;s internal score, which also varies by Mac model and macOS version. The real battery draw is <em>already measured accurately</em> elsewhere (<code class="ref">fetchBatteryWatts()</code> reads true amperage×voltage from <code>AppleSmartBattery</code>); the per-app POWER score is not commensurate with it. Worth cross-checking the badge thresholds against actual wattage, or at least documenting that &ldquo;Drain&rdquo; is a relative index.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">A7</span><span class="t">Background-process activity filter can hide moderate-but-steady drains</span><span class="sev low">Low</span></div>
+  <div class="body">
+    <p>When &ldquo;Include Background Processes&rdquo; is on, a row is only kept if <code>power &gt; 0 || rawCpu &gt; 3.0</code> (<code class="ref">BatteryMonitor.swift:352</code>). A daemon sitting at ~2% CPU continuously (a meaningful battery cost over hours) never appears, while it <em>would</em> show in macOS&rsquo;s averaged view. Low severity because it&rsquo;s opt-in, but it compounds A2.</p>
+  </div>
+</div>
+
+<div class="verdict"><b>Part 1 verdict.</b> Flux&rsquo;s readings aren&rsquo;t &ldquo;wrong&rdquo; so much as <em>measuring a different quantity</em> than the Battery pane, with two genuine bugs layered on top (A1 WebKit blind spot, A3 first-frame). Fixing A1 + A4 (PID/coalition attribution) and A2 (rank by trailing average) would bring Flux into broad agreement with macOS for the cases you noticed.</p></div>
+
+<!-- ============ PART 2: SELF IMPACT ============ -->
+<h2><span class="num">§2</span>Flux&rsquo;s own performance &amp; energy footprint</h2>
+<p>Why Flux occasionally shows up as a <b>Medium</b> impact process — in priority order of contribution.</p>
+
+<div class="finding">
+  <div class="head"><span class="id">B1</span><span class="t">The child <code>top</code> process is the headline cost — and macOS bills it to Flux</span><span class="sev high">High</span></div>
+  <div class="body">
+    <p>Flux keeps a <code>top -l 0 -s 5</code> running for the app&rsquo;s entire lifetime. Every 5 seconds <code>top</code> walks the full process table (<b>972 processes on this machine right now</b>), computes per-process energy, and prints it. That scan is not free — it is exactly the kind of periodic full-table work that registers as measurable CPU.</p>
+    <div class="callout"><b>The key insight for your question:</b> <code>top</code> is a <em>child</em> of Flux, so it shares Flux&rsquo;s process coalition. macOS&rsquo;s energy accounting (the same coalition rollup discussed in A1) attributes the child&rsquo;s CPU/energy <b>back to Flux</b>. So when you see &ldquo;Flux — Medium,&rdquo; a large part of that number is actually <code>top</code> doing the measuring. The observer is changing the measurement.</div>
+    <p><b>Fix direction:</b> replace the external <code>top</code> with an in-process sampler — <code>host_processor_info()</code> for system CPU, <code>proc_pid_rusage(... RUSAGE_INFO_V*)</code> / <code>proc_pidinfo</code> for per-process CPU and energy. This eliminates the child process entirely, removes the fork/parse overhead, and gives you real per-PID energy counters (which also fixes A1/A4). It is the highest-leverage change in this audit.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B2</span><span class="t">~3 main-actor hops per process line, every 5 s (~2,900 hops/frame)</span><span class="sev high">High</span></div>
+  <div class="body">
+    <p><code>parseTopLine</code> is <code>nonisolated</code>, but for <em>each</em> data row it bounces to the main actor several times:</p>
+<pre><span class="c">// per process row — BatteryMonitor.swift:323–344</span>
+} else if await getParsing() {          <span class="hl">// MainActor.run #1</span>
+    ...
+    let cores = await getCoreCount()    <span class="hl">// MainActor.run #2  (a constant!)</span>
+    ...
+    await addToSample(...)              <span class="hl">// MainActor.run #3</span>
+}</pre>
+    <p>At 972 processes that is on the order of <b>~2,900 main-actor context switches every 5 seconds</b>, all competing with SwiftUI on the main thread. Two of the three are gratuitous:</p>
+    <ul class="tight">
+      <li><code>getCoreCount()</code> hops to the main actor to read an immutable constant — it never needs to.</li>
+      <li><code>getParsing()</code> reads a flag that the same parse loop owns; it could be a local in a non-actor parser.</li>
+    </ul>
+    <p><b>Fix:</b> accumulate the whole frame in <em>local</em> (non-isolated) variables and hop to the main actor <b>once per frame</b> to publish. That alone cuts main-thread traffic by ~99%.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B3</span><span class="t">Byte-by-byte async line reading adds per-element overhead</span><span class="sev med">Medium</span></div>
+  <div class="body">
+    <p><code class="ref">BatteryMonitor.swift:269</code> consumes <code>fileHandle.bytes.lines</code>. <code>FileHandle.AsyncBytes</code> buffers its syscalls, but it still vends and the <code>.lines</code> wrapper still assembles strings <em>through the async-sequence machinery one element at a time</em>. For a multi-kilobyte frame of ~970 lines every 5 s, that&rsquo;s avoidable awaiting overhead. Reading fixed chunks and splitting on <code>\n</code> yourself is markedly cheaper. (Mostly moot once B1 removes <code>top</code> altogether.)</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B4</span><span class="t">Per-render EMA recomputation across 8 cards</span><span class="sev med">Medium</span></div>
+  <div class="body">
+    <p><code class="ref">AppCard.smoothedHistory</code> is a <em>computed property</em>, so SwiftUI re-runs the full exponential-moving-average over up to 720 points <b>on every render of every card</b>, and an expanded card renders two <code>Charts</code> off it. Because <code>topEnergyApps</code> is replaced every 5 s, all cards re-render and re-smooth on every frame. Memoize the smoothed series (compute once when the data point is appended in <code>finalizeUIUpdate</code>, store it on the model) instead of recomputing in <code>body</code>.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B5</span><span class="t">5-second wake cadence prevents deep idle</span><span class="sev med">Medium</span></div>
+  <div class="body">
+    <p>Independent of how much work each sample does, waking every 5 s keeps the CPU out of its lowest-power idle states. For a passive menu-bar meter, 5 s is aggressive — the panel is usually <em>closed</em>. Consider: sample at 5 s only while the popover is open; back off to 15–30 s (or pause) when it&rsquo;s closed. The <code>MenuBarExtra</code> window&rsquo;s appear/disappear is a natural trigger. This is the biggest single battery win after B1.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B6</span><span class="t">Unbounded <code>appHistory</code> dictionary growth</span><span class="sev low">Low</span></div>
+  <div class="body">
+    <p><code>appHistory</code> caps points <em>per app</em> at 720 but never evicts apps that have stopped running (<code class="ref">BatteryMonitor.swift:67,387–391</code>). Over a long uptime with many transient processes (especially if A1/background mode is broadened), the key set grows monotonically. Minor today; evict entries not seen for N frames.</p>
+  </div>
+</div>
+
+<div class="finding">
+  <div class="head"><span class="id">B7</span><span class="t">Debug logging to <code>/tmp</code> and <code>print()</code> left in shipping paths</span><span class="sev low">Low</span></div>
+  <div class="body">
+    <p>The Launch-at-Login toggle writes <code>[DEBUG-lal]</code> lines to <code>/tmp/flux_lal.txt</code> on every change (<code class="ref">SettingsView.swift:129–139</code>), and <code>BatteryMonitor.init</code> emits several <code>print()</code> calls. Negligible for battery, but it&rsquo;s debug residue that should be removed or gated behind <code>#if DEBUG</code> before release.</p>
+  </div>
+</div>
+
+<div class="verdict"><b>Part 2 verdict.</b> The Medium self-rating is real and explainable: a child <code>top</code> whose cost coalitions back into Flux (B1), amplified by thousands of needless main-actor hops (B2) and a 5 s always-on cadence (B5). Moving to in-process sampling and frame-batched publishing should drop Flux to consistently Low.</p></div>
+
+<!-- ============ RECS ============ -->
+<h2><span class="num">§3</span>Prioritized recommendations</h2>
+<table>
+  <thead><tr><th>Pri</th><th>Change</th><th>Fixes</th><th>Effort</th><th>Payoff</th></tr></thead>
+  <tbody>
+    <tr><td><span class="pri p0">P0</span></td><td>Replace child <code>top</code> with in-process sampling (<code>proc_pid_rusage</code> + <code>host_processor_info</code>); attribute energy by <b>PID/coalition</b>, not name substrings</td><td>A1, A4, B1, B2, B3</td><td>High</td><td>Largest accuracy <em>and</em> self-impact win; removes the observer effect</td></tr>
+    <tr><td><span class="pri p1">P1</span></td><td>Rank apps &amp; compute Heat/Drain from a <b>trailing average</b> (reuse the EMA you already keep), not the latest sample</td><td>A2, A7</td><td>Low</td><td>Brings rankings in line with the Battery pane</td></tr>
+    <tr><td><span class="pri p1">P1</span></td><td>Sample at 5 s only while the popover is open; back off / pause when closed</td><td>B5</td><td>Low</td><td>Major idle-battery saving</td></tr>
+    <tr><td><span class="pri p2">P2</span></td><td>If keeping <code>top</code> short-term: skip the first (cumulative) frame; stop blanket-blocking <code>com.apple.*</code> with activity; map <code>com.apple.WebKit.*</code>→Safari</td><td>A1, A3</td><td>Low</td><td>Cheap partial fix before the P0 rewrite lands</td></tr>
+    <tr><td><span class="pri p2">P2</span></td><td>Batch the parse: accumulate per frame in locals, publish to main actor once</td><td>B2</td><td>Low</td><td>~99% fewer main-thread hops</td></tr>
+    <tr><td><span class="pri p2">P2</span></td><td>Memoize <code>smoothedHistory</code> on the model instead of recomputing in <code>AppCard.body</code></td><td>B4</td><td>Low</td><td>Smoother UI, less render CPU</td></tr>
+    <tr><td><span class="pri p3">P3</span></td><td>Clarify CPU units (per-core vs whole-machine); calibrate badge thresholds against real wattage</td><td>A5, A6</td><td>Med</td><td>Less confusion vs Activity Monitor</td></tr>
+    <tr><td><span class="pri p3">P3</span></td><td>Evict stale <code>appHistory</code> keys; remove <code>/tmp</code> + <code>print</code> debug residue</td><td>B6, B7</td><td>Low</td><td>Housekeeping</td></tr>
+  </tbody>
+</table>
+
+<!-- ============ GLOSSARY ============ -->
+<h2><span class="num">§4</span>Appendix — why the two tools disagree (glossary)</h2>
+<table>
+  <thead><tr><th>Concept</th><th>What Flux uses</th><th>What macOS Battery pane uses</th></tr></thead>
+  <tbody>
+    <tr><td>Time window</td><td>Instantaneous (last 5 s)</td><td>Sustained average (hours / since last charge)</td></tr>
+    <tr><td>Process grouping</td><td>Command-name substring match</td><td>Full coalition (parent + helpers + XPC)</td></tr>
+    <tr><td>WebKit / Safari tabs</td><td>Dropped (<code>com.apple.*</code> filter)</td><td>Aggregated under Safari</td></tr>
+    <tr><td>CPU unit</td><td>% of whole machine (÷ core count)</td><td>per-core % (Activity Monitor)</td></tr>
+    <tr><td>Energy metric</td><td><code>top</code> POWER score (uncalibrated)</td><td>Coalition energy accounting</td></tr>
+    <tr><td>Self-measurement cost</td><td>Child <code>top</code>, coalitions back into Flux</td><td>n/a (kernel-side)</td></tr>
+  </tbody>
+</table>
+
+<footer>
+  Generated from static analysis of the Flux source tree (no runtime profiling was run; self-impact figures are reasoned from the code paths and the live process count of 972 observed on this machine). File references point to <code>Sources/Flux/*.swift</code> at branch <code>main</code>. The highest-confidence, highest-leverage action is P0 — moving off the external <code>top</code> to in-process, PID-attributed sampling, which simultaneously addresses the biggest accuracy defect and the biggest self-impact cost.
+</footer>
+
+</div>
+</body>
+</html>

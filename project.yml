@@ -1,0 +1,37 @@
+name: Flux
+
+options:
+  createIntermediateGroups: false
+  xcodeVersion: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+  Flux:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Sources/Flux
+        excludes:
+          - Info.plist
+          - Flux.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rishisinghal.Flux
+        MARKETING_VERSION: "2.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Sources/Flux/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/Flux/Flux.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    dependencies:
+      - sdk: IOKit.framework
