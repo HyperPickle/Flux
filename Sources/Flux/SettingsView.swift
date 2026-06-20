@@ -1,26 +1,11 @@
 import SwiftUI
 import ServiceManagement
-import os
-
-private extension String {
-    func appendLine(to url: URL) throws {
-        if let data = self.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: url.path) {
-                let handle = try FileHandle(forWritingTo: url)
-                handle.seekToEndOfFile()
-                handle.write(data)
-                handle.closeFile()
-            } else {
-                try data.write(to: url)
-            }
-        }
-    }
-}
 
 enum MenuBarStyle: String, CaseIterable, Identifiable {
     case iconOnly = "Icon Only"
-    case percentage = "Percentage"
+    case battery = "Battery"
     case time = "Time"
+    case batteryAndTime = "Battery + Time"
     var id: Self { self }
 }
 
@@ -45,11 +30,9 @@ struct SettingsPaneView: View {
     @AppStorage("graphZoomDefault") private var graphZoomDefault: GraphHistoryZoom = .sixHours
     @AppStorage("appOpacity") private var appOpacity: Double = 1.0
     @AppStorage("compactTime") private var compactTime: Bool = false
-    @AppStorage("showBackgroundProcesses") private var showBackgroundProcesses: Bool = false
+    @AppStorage("compactBattery") private var compactBattery: Bool = false
 
     @State private var launchAtLogin = false
-    private let lalLog = Logger(subsystem: "com.example.Flux", category: "LaunchAtLogin")
-
     let onBack: () -> Void
 
     var body: some View {
@@ -77,7 +60,7 @@ struct SettingsPaneView: View {
                 // Invisible balance for the Back button
                 Color.clear.frame(width: 44, height: 1)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 18)
             .padding(.top, 16)
             .padding(.bottom, 14)
 
@@ -88,14 +71,24 @@ struct SettingsPaneView: View {
                     // APPEARANCE: opacity + menu bar style
                     SettingsGroupView(title: "Appearance") {
                         SettingsSliderRow(label: "Opacity", value: $appOpacity, in: 0.1...1.0)
-                        Divider().padding(.horizontal, 10)
+                        Divider().padding(.horizontal, 11)
                         SettingsPickerRow(label: "Menu Bar", selection: $menuBarStyle) {
                             ForEach(MenuBarStyle.allCases) { style in
                                 Text(style.rawValue).tag(style)
                             }
                         }
                         if menuBarStyle == .time {
-                            Divider().padding(.horizontal, 10)
+                            Divider().padding(.horizontal, 11)
+                            SettingsToggleRow(label: "Show time only", isOn: $compactTime)
+                        }
+                        if menuBarStyle == .battery {
+                            Divider().padding(.horizontal, 11)
+                            SettingsToggleRow(label: "Show percentage only", isOn: $compactBattery)
+                        }
+                        if menuBarStyle == .batteryAndTime {
+                            Divider().padding(.horizontal, 11)
+                            SettingsToggleRow(label: "Show percentage only", isOn: $compactBattery)
+                            Divider().padding(.horizontal, 11)
                             SettingsToggleRow(label: "Show time only", isOn: $compactTime)
                         }
                     }
@@ -107,35 +100,31 @@ struct SettingsPaneView: View {
                                 Text(zoom.label).tag(zoom)
                             }
                         }
-                        Divider().padding(.horizontal, 10)
+                        Divider().padding(.horizontal, 11)
                         SettingsToggleRow(
                             label: "Launch at Login",
                             isOn: Binding(
                                 get: { launchAtLogin },
                                 set: { newValue in
                                     launchAtLogin = newValue
-                                    let logLine = "[DEBUG-lal] binding set, newValue=\(newValue), bundleID=\(Bundle.main.bundleIdentifier ?? "nil"), bundlePath=\(Bundle.main.bundlePath)\n"
-                                    try? logLine.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
                                     do {
                                         if newValue { try SMAppService.mainApp.register() }
                                         else { try SMAppService.mainApp.unregister() }
-                                        let ok = "[DEBUG-lal] success, status=\(SMAppService.mainApp.status.rawValue)\n"
-                                        try? ok.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
                                     } catch {
-                                        let fail = "[DEBUG-lal] error=\(error), status=\(SMAppService.mainApp.status.rawValue)\n"
-                                        try? fail.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
                                         launchAtLogin = SMAppService.mainApp.status == .enabled
                                     }
                                 }
                             )
                         )
-                        Divider().padding(.horizontal, 10)
-                        SettingsToggleRow(label: "Include Background Processes", isOn: $showBackgroundProcesses)
                     }
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 18)
                 .padding(.bottom, 16)
             }
+            // Size the scroll content to its natural height so the window grows
+            // to fit every visible option (no internal scrolling) without leaving
+            // empty space at the bottom when fewer options are shown.
+            .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -176,7 +165,7 @@ struct SettingsToggleRow: View {
                 .labelsHidden()
                 .toggleStyle(.checkbox)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 13)
         .padding(.vertical, 9)
     }
 }
@@ -188,15 +177,15 @@ struct SettingsPickerRow<SelectionValue: Hashable, Content: View>: View {
 
     var body: some View {
         HStack {
-            Text(label).font(.system(size: 12))
+            Text(label).font(.system(size: 12)).fixedSize()
             Spacer()
             Picker("", selection: $selection) { content() }
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .font(.system(size: 12))
-                .frame(width: 110)
+                .fixedSize()
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 13)
         .padding(.vertical, 6)
     }
 }
@@ -223,7 +212,7 @@ struct SettingsSliderRow: View {
             }
             Slider(value: $value, in: range)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 13)
         .padding(.vertical, 9)
     }
 }

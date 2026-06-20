@@ -78,13 +78,21 @@ struct SMCReader {
         }
     }
 
-    /// Tries each key in order, returns the first valid reading.
+    /// Averages every valid reading across the given keys. On Intel only one
+    /// CPU key typically resolves; on Apple Silicon many per-core sensors do,
+    /// and averaging them yields a stable, representative CPU temperature.
+    /// Returns nil when no key produces a valid reading.
     func readTemperature(keys: [String]) -> Double? {
         guard connection != 0 else { return nil }
+        var sum = 0.0
+        var count = 0
         for key in keys {
-            if let temp = readTemp(key: key) { return temp }
+            if let temp = readTemp(key: key) {
+                sum += temp
+                count += 1
+            }
         }
-        return nil
+        return count > 0 ? sum / Double(count) : nil
     }
 
     private func readTemp(key: String) -> Double? {
@@ -98,22 +106,35 @@ struct SMCReader {
         guard callSMC(input: &infoInput, output: &infoOutput) else { return nil }
 
         let dataType = infoOutput.keyInfo.dataType
+        let dataSize = infoOutput.keyInfo.dataSize
 
-        // c. only sp78-encoded temperatures are handled
-        guard dataType == fourCC("sp78") else { return nil }
+        // c. only the two temperature encodings we know how to decode are handled:
+        //    - sp78: Intel SMC fixed-point
+        //    - flt:  Apple Silicon SMC 32-bit float
+        // Note: the SMC float type is the four characters "flt " — the trailing
+        // space is load-bearing. fourCC("flt") (3 chars) would never match.
+        let isSP78 = dataType == fourCC("sp78")
+        let isFloat = dataType == fourCC("flt ") && dataSize == 4
+        guard isSP78 || isFloat else { return nil }
 
         // b. ReadBytes
         var readInput = SMCKeyData()
         readInput.key = keyCode
-        readInput.keyInfo.dataSize = infoOutput.keyInfo.dataSize
+        readInput.keyInfo.dataSize = dataSize
         readInput.data8 = SMCReader.cmdReadBytes
         var readOutput = SMCKeyData()
         guard callSMC(input: &readInput, output: &readOutput) else { return nil }
 
-        // decode sp78: signed fixed point, 8 integer bits + 8 fractional bits
-        let b0 = readOutput.bytes.0
-        let b1 = readOutput.bytes.1
-        let temp = Double((UInt16(b0) << 8) | UInt16(b1)) / 256.0
+        let b = readOutput.bytes
+        let temp: Double
+        if isSP78 {
+            // sp78: signed fixed point, 8 integer bits + 8 fractional bits, big-endian
+            temp = Double((UInt16(b.0) << 8) | UInt16(b.1)) / 256.0
+        } else {
+            // flt: little-endian IEEE-754 32-bit float (Apple Silicon)
+            let bits = UInt32(b.0) | (UInt32(b.1) << 8) | (UInt32(b.2) << 16) | (UInt32(b.3) << 24)
+            temp = Double(Float(bitPattern: bits))
+        }
 
         // d. sanity guard
         guard temp > 0 && temp < 150 else { return nil }

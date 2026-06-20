@@ -3,16 +3,6 @@ import IOKit
 import IOKit.ps
 import AppKit
 
-// Process names suppressed from the "Background Processes" view — pure OS noise
-// that would otherwise clutter the list without being user-actionable.
-private let backgroundProcessBlockList: Set<String> = [
-    "finder", "windowserver", "dock", "loginwindow", "launchd",
-    "kernel_task", "mds", "mdworker", "mds_stores", "spotlight",
-    "systemuiserver", "controlcenter", "notificationcenter",
-    "usernotificationcenter", "hidd", "commcenter",
-    "nsurlsessiond", "trustd", "configd"
-]
-
 // MARK: - Data point for sparklines
 struct AppMetricPoint: Identifiable, Equatable {
     let id: Int
@@ -28,7 +18,119 @@ struct AppEnergyUsage: Identifiable {
     let cpuUsage: Double
     let ramUsage: String
     let history: [AppMetricPoint]
+    let smoothedHistory: [AppMetricPoint]
     let icon: NSImage?
+}
+
+private struct TopFrame: Sendable {
+    var powerByApp: [String: Double] = [:]
+    var cpuByApp: [String: Double] = [:]
+    var memoryByApp: [String: Int] = [:]
+    var systemCPUUser: Double = 0
+    var systemCPUSystem: Double = 0
+    var usedMemoryMB: Int = 0
+}
+
+/// Parses `top` output off the main actor. Logging-mode `top` reports cumulative
+/// values in its first frame, so only the second frame is returned.
+private struct TopFrameParser: Sendable {
+    let appByPID: [Int32: String]
+    let foregroundAppNames: [String]
+
+    private var frame = TopFrame()
+    private var isReadingProcesses = false
+    private var completedFrameCount = 0
+
+    mutating func consume(_ line: String) -> TopFrame? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        if trimmed.hasPrefix("CPU usage:") {
+            let parts = trimmed.components(separatedBy: ",")
+            if parts.count >= 2 {
+                frame.systemCPUUser = percentage(parts[0].replacingOccurrences(of: "CPU usage:", with: ""))
+                frame.systemCPUSystem = percentage(parts[1])
+            }
+        } else if trimmed.hasPrefix("PhysMem:") {
+            let used = trimmed.replacingOccurrences(of: "PhysMem:", with: "")
+                .split(separator: " ").first.map(String.init) ?? "0B"
+            frame.usedMemoryMB = Self.memoryInMB(used)
+        } else if trimmed.hasPrefix("PID") {
+            frame.powerByApp.removeAll(keepingCapacity: true)
+            frame.cpuByApp.removeAll(keepingCapacity: true)
+            frame.memoryByApp.removeAll(keepingCapacity: true)
+            isReadingProcesses = true
+        } else if (trimmed.isEmpty || trimmed.hasPrefix("Processes:")), isReadingProcesses {
+            isReadingProcesses = false
+            completedFrameCount += 1
+            return completedFrameCount > 1 ? frame : nil
+        } else if isReadingProcesses {
+            consumeProcessRow(trimmed)
+        }
+
+        return nil
+    }
+
+    mutating func finish() -> TopFrame? {
+        guard isReadingProcesses else { return nil }
+        isReadingProcesses = false
+        completedFrameCount += 1
+        return completedFrameCount > 1 ? frame : nil
+    }
+
+    private mutating func consumeProcessRow(_ line: String) {
+        let parts = line.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        guard parts.count >= 5, let pid = Int32(parts[0]) else { return }
+
+        let memory = Self.memoryInMB(parts.last ?? "0B")
+        let power = Double(parts[parts.count - 2]) ?? 0
+        // Keep Activity Monitor's per-core convention: one saturated core is 100%.
+        let cpu = Double(parts[parts.count - 3]) ?? 0
+        let command = parts[1..<(parts.count - 3)].joined(separator: " ")
+
+        guard let appName = attributedAppName(pid: pid, command: command) else { return }
+        frame.powerByApp[appName, default: 0] += power
+        frame.cpuByApp[appName, default: 0] += cpu
+        frame.memoryByApp[appName, default: 0] += memory
+    }
+
+    private func attributedAppName(pid: Int32, command: String) -> String? {
+        if let exactApp = appByPID[pid] { return exactApp }
+
+        let baseName = command.components(separatedBy: "(").first?
+            .trimmingCharacters(in: .whitespaces) ?? command
+        let lower = baseName.lowercased()
+
+        if lower.hasPrefix("com.apple.webkit.") || lower.hasPrefix("webkit") {
+            return foregroundAppNames.first { $0.caseInsensitiveCompare("Safari") == .orderedSame }
+        }
+
+        // Exact display names and explicit helper suffixes avoid substring collisions.
+        if let owner = foregroundAppNames.sorted(by: { $0.count > $1.count }).first(where: {
+            let app = $0.lowercased()
+            return lower == app || lower.hasPrefix(app + " helper")
+        }) {
+            return owner
+        }
+
+        return nil
+    }
+
+    private func percentage(_ value: String) -> Double {
+        Double(value.replacingOccurrences(of: "% user", with: "")
+            .replacingOccurrences(of: "% sys", with: "")
+            .trimmingCharacters(in: .whitespaces)) ?? 0
+    }
+
+    private static func memoryInMB(_ memory: String) -> Int {
+        let valueString = memory.trimmingCharacters(in: CharacterSet.letters.union(.whitespaces))
+        guard let value = Double(valueString) else { return 0 }
+        switch memory.suffix(1).uppercased() {
+        case "G": return Int(value * 1024)
+        case "M": return Int(value)
+        case "K": return Int(value / 1024)
+        default: return Int(value)
+        }
+    }
 }
 
 @MainActor
@@ -43,6 +145,8 @@ class BatteryMonitor: ObservableObject {
     
     @Published var systemCPU: String = "0%"
     @Published var systemCPUValue: Double = 0.0
+    @Published var systemCPUUser: Double = 0.0
+    @Published var systemCPUSys: Double = 0.0
     @Published var systemRAM: String = "0/0GB"
     @Published var systemRAMPercent: Double = 0.0
     @Published var memoryPressure: String = "Normal"
@@ -63,19 +167,17 @@ class BatteryMonitor: ObservableObject {
     }()
 
     private var appHistory: [String: [AppMetricPoint]] = [:]
+    private var appLastSeenSample: [String: Int] = [:]
+    private var sampleNumber = 0
     private let maxHistory = 720
     private var timer: Timer?
     private var topProcess: Process?
+    nonisolated(unsafe) private var topSampleTimer: Timer?
+    private var isDetailsVisible = false
+    private var samplingGeneration = 0
     private var smcReader = SMCReader()
     nonisolated(unsafe) private var psRunLoopSource: CFRunLoopSource?
     private static weak var current: BatteryMonitor?
-    
-    private let coreCount: Double = {
-        var ncpu: Int32 = 0
-        var size = MemoryLayout<Int32>.size
-        sysctlbyname("hw.ncpu", &ncpu, &size, nil, 0)
-        return Double(ncpu > 0 ? ncpu : 1)
-    }()
 
     private let totalRAMBytes: Int64 = {
         var size: Int64 = 0
@@ -85,16 +187,19 @@ class BatteryMonitor: ObservableObject {
     }()
 
     init() {
+        #if DEBUG
         print("DEBUG: BatteryMonitor initializing...")
+        #endif
         if !smcReader.open() {
+            #if DEBUG
             print("DEBUG: SMC open failed — CPU temperature unavailable.")
+            #endif
         }
         loadHistory()
         fetchBatteryInfo()
         fetchCPUTemperature()
         startMonitoring()
         startPowerSourceNotification()
-        startTopStream()
     }
 
     private func loadHistory() {
@@ -104,7 +209,9 @@ class BatteryMonitor: ObservableObject {
             // Filter points older than 24h
             let cutoff = Date().addingTimeInterval(-24 * 3600)
             self.batteryHistory = decoded.filter { $0.time > cutoff }
+            #if DEBUG
             print("DEBUG: Loaded \(batteryHistory.count) historical points.")
+            #endif
         }
     }
 
@@ -125,6 +232,7 @@ class BatteryMonitor: ObservableObject {
 
 
     deinit {
+        topSampleTimer?.invalidate()
         topProcess?.terminate()
         if let source = psRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
@@ -134,7 +242,13 @@ class BatteryMonitor: ObservableObject {
 
     private func fetchCPUTemperature() {
         cpuTemperature = smcReader.readTemperature(
-            keys: ["TC0P", "TC0E", "TC0D", "Tp01", "Tp05", "TaLC", "TCXC", "TCSC"]
+            keys: [
+                // Intel CPU die/proximity sensors (sp78)
+                "TC0P", "TC0E", "TC0D",
+                // Apple Silicon per-core sensors (flt). Averaged for a stable reading.
+                "Tp01", "Tp05", "Tp09", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0T",
+                "Tp0X", "Tp0b", "Tp0f", "Tp0j", "Tp0n",
+            ]
         )
     }
 
@@ -236,20 +350,51 @@ class BatteryMonitor: ObservableObject {
         batteryWatts = abs(mA * mV) / 1_000_000.0
     }
 
-    private func startTopStream() {
+    func setDetailsVisible(_ visible: Bool) {
+        guard visible != isDetailsVisible else { return }
+        isDetailsVisible = visible
+        samplingGeneration += 1
+
+        if visible {
+            runTopSample()
+            topSampleTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.runTopSample() }
+            }
+        } else {
+            topSampleTimer?.invalidate()
+            topSampleTimer = nil
+            topProcess?.terminate()
+            topProcess = nil
+        }
+    }
+
+    private func runTopSample() {
+        guard isDetailsVisible, topProcess == nil else { return }
+        let generation = samplingGeneration
         let runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         // Also surface menu-bar extras and background helpers with minimal UI.
         let accessoryApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .accessory }
         let allApps = runningApps + accessoryApps
         let runningAppNames = allApps.compactMap { $0.localizedName }
         var runningAppIcons: [String: NSImage] = [:]
+        var appByPID: [Int32: String] = [:]
         for app in allApps {
-            if let name = app.localizedName, let icon = app.icon { runningAppIcons[name] = icon }
+            guard let name = app.localizedName else { continue }
+            appByPID[app.processIdentifier] = name
+            if let icon = app.icon { runningAppIcons[name] = icon }
+        }
+        let isSafariRunning = runningAppNames.contains {
+            $0.caseInsensitiveCompare("Safari") == .orderedSame
+        }
+        for app in NSWorkspace.shared.runningApplications where isSafariRunning {
+            if app.bundleIdentifier?.hasPrefix("com.apple.WebKit.") == true {
+                appByPID[app.processIdentifier] = "Safari"
+            }
         }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/top")
-        process.arguments = ["-l", "0", "-s", "5", "-stats", "pid,command,cpu,power,mem", "-o", "cpu"]
+        process.arguments = ["-l", "2", "-s", "1", "-stats", "pid,command,cpu,power,mem", "-o", "cpu"]
         
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -258,159 +403,134 @@ class BatteryMonitor: ObservableObject {
         let fileHandle = pipe.fileHandleForReading
         
         Task.detached { [weak self] in
-            for try await line in fileHandle.bytes.lines {
-                guard let self = self else { break }
-                await self.parseTopLine(line, appNames: runningAppNames, appIcons: runningAppIcons)
+            var parser = TopFrameParser(
+                appByPID: appByPID,
+                foregroundAppNames: runningAppNames
+            )
+            var pending = Data()
+            do {
+                while let chunk = try fileHandle.read(upToCount: 64 * 1024), !chunk.isEmpty {
+                    pending.append(chunk)
+                    while let newline = pending.firstIndex(of: 0x0A) {
+                        let lineData = pending[..<newline]
+                        pending.removeSubrange(...newline)
+                        guard let line = String(data: lineData, encoding: .utf8) else { continue }
+                        if let frame = parser.consume(line) {
+                            await self?.publish(
+                                frame: frame,
+                                appIcons: runningAppIcons,
+                                generation: generation
+                            )
+                        }
+                    }
+                }
+                if let frame = parser.finish() {
+                    await self?.publish(
+                        frame: frame,
+                        appIcons: runningAppIcons,
+                        generation: generation
+                    )
+                }
+            } catch {
+                // Expected if closing the popover terminates the sample.
             }
+            await self?.topSampleDidFinish(process)
         }
 
         do {
             try process.run()
         } catch {
+            topProcess = nil
             print("Failed to start top stream: \(error)")
         }
+    }
+
+    private func topSampleDidFinish(_ process: Process) {
+        if topProcess === process { topProcess = nil }
+    }
+
+    private func publish(frame: TopFrame, appIcons: [String: NSImage], generation: Int) {
+        guard isDetailsVisible, generation == samplingGeneration else { return }
+        currentAppPowerMap = frame.powerByApp
+        currentAppCPUMap = frame.cpuByApp
+        currentAppMemMap = frame.memoryByApp
+
+        let totalCPU = frame.systemCPUUser + frame.systemCPUSystem
+        systemCPU = String(format: "%.0f%%", totalCPU)
+        systemCPUValue = totalCPU
+        systemCPUUser = frame.systemCPUUser
+        systemCPUSys = frame.systemCPUSystem
+
+        let totalMB = totalRAMBytes / (1024 * 1024)
+        let totalGB = totalRAMBytes / (1024 * 1024 * 1024)
+        let usedMB = frame.usedMemoryMB
+        let usedDisplay = usedMB >= 1024 ? String(format: "%.1fGB", Double(usedMB) / 1024) : "\(usedMB)MB"
+        systemRAM = "\(usedDisplay)/\(totalGB)GB"
+        systemRAMPercent = totalMB > 0 ? Double(usedMB) / Double(totalMB) * 100 : 0
+
+        finalizeUIUpdate(appIcons: appIcons)
     }
 
     private var currentAppPowerMap: [String: Double] = [:]
     private var currentAppCPUMap:   [String: Double] = [:]
     private var currentAppMemMap:   [String: Int]    = [:]
-    private var isDataLine = false
-
-    nonisolated private func parseTopLine(_ line: String, appNames: [String], appIcons: [String: NSImage]) async {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
+    private func finalizeUIUpdate(appIcons: [String: NSImage]) {
+        let powerMap = currentAppPowerMap
+        let cpuMap = currentAppCPUMap
+        let memMap = currentAppMemMap
+        sampleNumber += 1
         
-        if trimmed.hasPrefix("CPU usage:") {
-            let parts = trimmed.components(separatedBy: ",")
-            if parts.count >= 3 {
-                let userStr = parts[0].replacingOccurrences(of: "CPU usage: ", with: "").replacingOccurrences(of: "% user", with: "").trimmingCharacters(in: .whitespaces)
-                let sysStr = parts[1].replacingOccurrences(of: "% sys", with: "").replacingOccurrences(of: "% sys", with: "").trimmingCharacters(in: .whitespaces)
-                if let user = Double(userStr), let sys = Double(sysStr) {
-                    let total = user + sys
-                    await MainActor.run { 
-                        self.systemCPU = String(format: "%.0f%%", total) 
-                        self.systemCPUValue = total
-                    }
-                }
-            }
-        } else if trimmed.hasPrefix("PhysMem:") {
-            let usedPart = trimmed.replacingOccurrences(of: "PhysMem: ", with: "").components(separatedBy: " ").first ?? ""
-            let usedMB = parseMemToMB(usedPart)
-            let totalMB = totalRAMBytes / (1024 * 1024)
-            let totalGB = totalRAMBytes / (1024 * 1024 * 1024)
-            let usedDisplay = usedMB >= 1024 ? String(format: "%.1fGB", Double(usedMB)/1024.0) : "\(usedMB)MB"
-            await MainActor.run { 
-                self.systemRAM = "\(usedDisplay)/\(totalGB)GB" 
-                self.systemRAMPercent = Double(usedMB) / Double(totalMB) * 100.0
-            }
-        } else if trimmed.hasPrefix("PID") {
-            await resetSampleState()
-            await setParsing(true)
-        } else if (trimmed.isEmpty || trimmed.hasPrefix("Processes:")) {
-            if await getParsing() {
-                await setParsing(false)
-                await finalizeUIUpdate(appIcons: appIcons)
-            }
-        } else if await getParsing() {
-            let parts = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-            guard parts.count >= 5 else { return }
-            let memStr = parts.last ?? "0B"
-            let power  = Double(parts[parts.count - 2]) ?? 0.0
-            let rawCpu = Double(parts[parts.count - 3]) ?? 0.0
-            
-            // Fixed await syntax
-            let cores  = await getCoreCount()
-            let cpu    = rawCpu / cores
-            
-            let commandName = parts[1..<(parts.count - 3)].joined(separator: " ")
-
-            var matchedApp: String? = nil
-            for appName in appNames {
-                if commandName.localizedCaseInsensitiveContains(appName) || 
-                   appName.localizedCaseInsensitiveContains(commandName.replacingOccurrences(of: "(", with: "").trimmingCharacters(in: .whitespaces)) {
-                        matchedApp = appName; break
-                    }
-                }
-            if let appName = matchedApp {
-                await addToSample(appName: appName, power: power, cpu: cpu, memMB: parseMemToMB(memStr))
-            } else if UserDefaults.standard.bool(forKey: "showBackgroundProcesses") {
-                let baseName = commandName.components(separatedBy: "(").first?
-                    .trimmingCharacters(in: .whitespaces) ?? commandName
-                let lower = baseName.lowercased()
-                let blocked = backgroundProcessBlockList.contains(lower)
-                    || lower.hasPrefix("com.apple.")
-                    || lower.hasPrefix("com.google.")
-                let hasActivity = power > 0 || rawCpu > 3.0
-                if !blocked && hasActivity {
-                    await addToSample(appName: commandName, power: power, cpu: cpu, memMB: parseMemToMB(memStr))
-                }
-            }
+        for (appName, power) in powerMap {
+            appLastSeenSample[appName] = sampleNumber
+            let cpu = cpuMap[appName] ?? 0.0
+            var hist = self.appHistory[appName] ?? []
+            let newID = (hist.last?.id ?? -1) + 1
+            hist.append(AppMetricPoint(id: newID, time: Date(), cpu: cpu, power: power))
+            if hist.count > self.maxHistory { hist.removeFirst() }
+            self.appHistory[appName] = hist
         }
+
+        let staleNames = appLastSeenSample.compactMap { name, lastSeen in
+            sampleNumber - lastSeen > 120 ? name : nil
+        }
+        for name in staleNames {
+            appHistory.removeValue(forKey: name)
+            appLastSeenSample.removeValue(forKey: name)
+        }
+
+        var apps = powerMap.map { (name, power) -> AppEnergyUsage in
+            let mb = memMap[name] ?? 0
+            let ramDisplay = mb >= 1024 ? String(format: "%.1fGB", Double(mb)/1024.0) : "\(mb)MB"
+            let history = self.appHistory[name] ?? []
+            let smoothedHistory = self.smoothed(history)
+            return AppEnergyUsage(
+                appName: name,
+                energyImpact: smoothedHistory.last?.power ?? power,
+                cpuUsage: smoothedHistory.last?.cpu ?? cpuMap[name] ?? 0.0,
+                ramUsage: ramDisplay,
+                history: history,
+                smoothedHistory: smoothedHistory,
+                icon: appIcons[name]
+            )
+        }
+        apps.sort {
+            if $0.energyImpact != $1.energyImpact { return $0.energyImpact > $1.energyImpact }
+            return $0.cpuUsage > $1.cpuUsage
+        }
+        self.topEnergyApps = Array(apps.prefix(8))
+        self.totalEnergyImpact = apps.reduce(0) { $0 + $1.energyImpact }
     }
 
-    private func resetSampleState() async {
-        await MainActor.run {
-            currentAppPowerMap.removeAll()
-            currentAppCPUMap.removeAll()
-            currentAppMemMap.removeAll()
-        }
-    }
-    private func setParsing(_ value: Bool) async { await MainActor.run { isDataLine = value } }
-    private func getParsing() async -> Bool { await MainActor.run { isDataLine } }
-    private func getCoreCount() async -> Double { await MainActor.run { coreCount } }
-    
-    private func addToSample(appName: String, power: Double, cpu: Double, memMB: Int) async {
-        await MainActor.run {
-            currentAppPowerMap[appName, default: 0.0] += power
-            currentAppCPUMap[appName,   default: 0.0] += cpu
-            currentAppMemMap[appName,   default: 0]   += memMB
-        }
-    }
-
-    private func finalizeUIUpdate(appIcons: [String: NSImage]) async {
-        await MainActor.run {
-            let powerMap = currentAppPowerMap
-            let cpuMap = currentAppCPUMap
-            let memMap = currentAppMemMap
-            
-            for (appName, power) in powerMap {
-                let cpu = cpuMap[appName] ?? 0.0
-                var hist = self.appHistory[appName] ?? []
-                let newID = (hist.last?.id ?? -1) + 1
-                hist.append(AppMetricPoint(id: newID, time: Date(), cpu: cpu, power: power))
-                if hist.count > self.maxHistory { hist.removeFirst() }
-                self.appHistory[appName] = hist
-            }
-
-            var apps = powerMap.map { (name, power) -> AppEnergyUsage in
-                let mb = memMap[name] ?? 0
-                let ramDisplay = mb >= 1024 ? String(format: "%.1fGB", Double(mb)/1024.0) : "\(mb)MB"
-                return AppEnergyUsage(
-                    appName: name,
-                    energyImpact: power,
-                    cpuUsage: cpuMap[name] ?? 0.0,
-                    ramUsage: ramDisplay,
-                    history: self.appHistory[name] ?? [],
-                    icon: appIcons[name]
-                )
-            }
-            apps.sort { 
-                if $0.energyImpact != $1.energyImpact { return $0.energyImpact > $1.energyImpact }
-                return $0.cpuUsage > $1.cpuUsage
-            }
-            self.topEnergyApps = Array(apps.prefix(8))
-            self.totalEnergyImpact = apps.reduce(0) { $0 + $1.energyImpact }
+    private func smoothed(_ history: [AppMetricPoint]) -> [AppMetricPoint] {
+        guard let first = history.first else { return [] }
+        let alpha = 0.15
+        var powerEMA = first.power
+        var cpuEMA = first.cpu
+        return history.map { point in
+            powerEMA += alpha * (point.power - powerEMA)
+            cpuEMA += alpha * (point.cpu - cpuEMA)
+            return AppMetricPoint(id: point.id, time: point.time, cpu: cpuEMA, power: powerEMA)
         }
     }
     
-    nonisolated private func parseMemToMB(_ mem: String) -> Int {
-        let valueStr = mem.trimmingCharacters(in: CharacterSet.letters.union(.whitespaces))
-        guard let value = Double(valueStr) else { return 0 }
-        let unit = mem.suffix(1).uppercased()
-        switch unit {
-        case "G": return Int(value * 1024)
-        case "M": return Int(value)
-        case "K": return Int(value / 1024)
-        default:  return Int(value)
-        }
-    }
 }
