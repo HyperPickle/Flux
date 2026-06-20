@@ -371,10 +371,14 @@ class BatteryMonitor: ObservableObject {
     private func runTopSample() {
         guard isDetailsVisible, topProcess == nil else { return }
         let generation = samplingGeneration
-        let runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        // Also surface menu-bar extras and background helpers with minimal UI.
-        let accessoryApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .accessory }
-        let allApps = runningApps + accessoryApps
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let ownBundleIdentifier = Bundle.main.bundleIdentifier
+        let allApps = NSWorkspace.shared.runningApplications.filter { app in
+            guard app.processIdentifier != ownPID else { return false }
+            if let ownBundleIdentifier, app.bundleIdentifier == ownBundleIdentifier { return false }
+            // Also surface menu-bar extras and background helpers with minimal UI.
+            return app.activationPolicy == .regular || app.activationPolicy == .accessory
+        }
         let runningAppNames = allApps.compactMap { $0.localizedName }
         var runningAppIcons: [String: NSImage] = [:]
         var appByPID: [Int32: String] = [:]
