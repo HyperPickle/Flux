@@ -14,7 +14,6 @@ let package = Package(
         .executableTarget(
             name: "Flux",
             linkerSettings: [
-                .unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", "Sources/Flux/Info.plist"]),
                 .linkedFramework("IOKit")
             ]
         ),
