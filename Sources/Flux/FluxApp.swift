@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 @main
 struct FluxApp: App {
     @StateObject private var monitor = BatteryMonitor()
+    @AppStorage("appAppearance") private var appAppearance: AppAppearance = .system
     @AppStorage("menuBarStyle") private var menuBarStyle: MenuBarStyle = .iconOnly
     @AppStorage("compactTime") private var compactTime: Bool = false
     @AppStorage("compactBattery") private var compactBattery: Bool = false
@@ -10,6 +12,13 @@ struct FluxApp: App {
     var body: some Scene {
         MenuBarExtra {
             ContentView(monitor: monitor)
+                .preferredColorScheme(appAppearance.preferredColorScheme)
+                .onAppear {
+                    applyAppearance(appAppearance)
+                }
+                .onChange(of: appAppearance) { _, newAppearance in
+                    applyAppearance(newAppearance)
+                }
         } label: {
             switch menuBarStyle {
             case .iconOnly:
@@ -36,5 +45,20 @@ struct FluxApp: App {
 
     private var menuBarTime: String {
         monitor.timeRemaining.components(separatedBy: " ").first ?? monitor.timeRemaining
+    }
+
+    private func applyAppearance(_ appearance: AppAppearance) {
+        let application = NSApplication.shared
+        switch appearance {
+        case .system:
+            application.appearance = nil
+        case .light:
+            application.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            application.appearance = NSAppearance(named: .darkAqua)
+        }
+        // Reset the cached icon so the AppIcon asset resolves its matching
+        // light or dark appearance after the application override changes.
+        application.applicationIconImage = nil
     }
 }
