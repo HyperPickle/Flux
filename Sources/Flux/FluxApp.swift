@@ -4,34 +4,26 @@ import SwiftUI
 struct FluxApp: App {
     @StateObject private var monitor = BatteryMonitor()
     @AppStorage("menuBarStyle") private var menuBarStyle: MenuBarStyle = .iconOnly
+    @AppStorage("compactTime") private var compactTime: Bool = false
 
     var body: some Scene {
         MenuBarExtra {
             ContentView(monitor: monitor)
         } label: {
-            HStack(spacing: 4) {
+            switch menuBarStyle {
+            case .iconOnly:
                 Image(systemName: "bolt.fill")
-                    .foregroundColor(menuBarColor)
-                
-                if menuBarStyle == .iconPercentage {
-                    Text("\(monitor.batteryLevel)%")
-                } else if menuBarStyle == .iconTime {
-                    Text(monitor.timeRemaining)
-                }
+            case .percentage:
+                Text("\(monitor.batteryLevel)%")
+            case .time:
+                Text(compactTime ? menuBarTime : monitor.timeRemaining)
             }
         }
         .menuBarExtraStyle(.window)
 
-        Settings {
-            SettingsView()
-        }
     }
 
-    private var menuBarColor: Color {
-        if monitor.batteryLevel <= 20 {
-            return .red
-        } else {
-            return .primary
-        }
+    private var menuBarTime: String {
+        monitor.timeRemaining.components(separatedBy: " ").first ?? monitor.timeRemaining
     }
 }

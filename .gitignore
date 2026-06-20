@@ -14,4 +14,7 @@ DerivedData/
 *.zip
 *.jpg
 GEMINI.md
+/AGENTS.md
+/CLAUDE.md
 *.gitignore
+/scratch

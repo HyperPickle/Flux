@@ -101,7 +101,7 @@ struct InteractiveBatteryChart: View {
     @State private var hoveredPoint: BatteryDataPoint? = nil
     @State private var tooltipX: CGFloat = 0
     @State private var tooltipY: CGFloat = 0
-    @State private var zoomHours: Double = 1.0
+    @State private var zoomHours: Double = 6.0
     @State private var cachedBatteryHistory: [BatteryDataPoint] = []
     @State private var cachedSmoothedHistory: [BatteryRenderPoint] = []
     @State private var cachedChargingHistory: [BatteryRenderPoint] = []
@@ -293,6 +293,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var expandedApp: String? = nil
     @State private var showAllProcesses: Bool = false
+    @State private var showSettings = false
     @AppStorage("appOpacity") private var appOpacity: Double = 1.0
 
     var displayedApps: [AppEnergyUsage] {
@@ -324,7 +325,14 @@ struct ContentView: View {
                 .opacity(appOpacity)
                 .ignoresSafeArea()
             
-            VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                if showSettings {
+                    SettingsPaneView(onBack: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showSettings = false }
+                    })
+                    .transition(.asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .trailing)))
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
                 // ── Header ───────────────────────────────────────────────
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -340,36 +348,34 @@ struct ContentView: View {
                                     .offset(y: -10)
                             }
                         }
-                        Text(statusText)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
-                            .offset(y: -4)
+                        HStack(spacing: 5) {
+                            Text(statusText)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            if monitor.batteryWatts > 0 {
+                                Text(monitor.isCharging ? "·" : "–")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.secondary.opacity(0.5))
+                                Text(String(format: "%.1fW", monitor.batteryWatts))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .offset(y: -4)
                     }
                     Spacer()
 
                     HStack(spacing: 12) {
-                        if #available(macOS 14.0, *) {
-                            SettingsLink {
-                                Image(systemName: "gearshape.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.secondary.opacity(0.4))
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                                showSettings = true
                             }
-                            .buttonStyle(.plain)
-                        } else {
-                            Button(action: {
-                                NSApp.activate(ignoringOtherApps: true)
-                                if #available(macOS 13.0, *) {
-                                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                                } else {
-                                    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
-                                }
-                            }) {
-                                Image(systemName: "gearshape.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(.secondary.opacity(0.4))
-                            }
-                            .buttonStyle(.plain)
+                        } label: {
+                            Image(systemName: "gearshape.fill")
+                                .font(.title3)
+                                .foregroundStyle(.secondary.opacity(0.4))
                         }
+                        .buttonStyle(.plain)
 
                         Button(action: { NSApplication.shared.terminate(nil) }) {
                             Image(systemName: "xmark.circle.fill")
@@ -389,9 +395,11 @@ struct ContentView: View {
                     MetricPill(label: "CPU", value: monitor.systemCPU, icon: "cpu", color: cpuColor)
                     let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
                     MetricPill(label: "DRAIN", value: drain.label, icon: "bolt", color: drain.color)
-                    
-                    let memColor: Color = monitor.memoryPressureState == 0 ? .green : (monitor.memoryPressureState == 1 ? .orange : .red)
-                    MetricPill(label: "RAM", value: monitor.memoryPressure, icon: "memorychip", color: memColor)
+                    if let temp = monitor.cpuTemperature {
+                        let tempColor: Color = temp < 60 ? .green : temp < 80 ? .yellow : .red
+                        MetricPill(label: "TEMP", value: String(format: "%.0f°C", temp),
+                                   icon: "thermometer.medium", color: tempColor)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)
@@ -433,7 +441,7 @@ struct ContentView: View {
                         let highImpactApps = monitor.topEnergyApps.filter { HeatLevel(power: $0.energyImpact, cpu: $0.cpuUsage) != .low }
                         
                         if !showAllProcesses && highImpactApps.isEmpty {
-                            Text("No high-impact processes")
+                            Text("No high impact processes")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
                                 .frame(maxWidth: .infinity, alignment: .center)
@@ -467,7 +475,11 @@ struct ContentView: View {
                 .animation(.easeInOut(duration: 0.2), value: showAllProcesses)
 
                 Color.clear.frame(height: 16)
+                    }
+                    .transition(.asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .leading)))
+                }
             }
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: showSettings)
         }
         .frame(width: 280)
     }
@@ -499,9 +511,15 @@ struct MetricPill: View {
             Image(systemName: icon).font(.system(size: 8))
             Text(value).font(.system(size: 9, weight: .bold, design: .rounded))
         }
-        .foregroundColor(color).padding(.horizontal, 8).padding(.vertical, 4)
-        .background(color.opacity(0.08)).clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(color.opacity(0.15), lineWidth: 1))
+        .foregroundColor(color)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7).fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: 7).fill(color.opacity(0.10))
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(color.opacity(0.20), lineWidth: 0.75))
     }
 }
 

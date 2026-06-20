@@ -1,25 +1,27 @@
 import SwiftUI
 import ServiceManagement
+import os
+
+private extension String {
+    func appendLine(to url: URL) throws {
+        if let data = self.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: url.path) {
+                let handle = try FileHandle(forWritingTo: url)
+                handle.seekToEndOfFile()
+                handle.write(data)
+                handle.closeFile()
+            } else {
+                try data.write(to: url)
+            }
+        }
+    }
+}
 
 enum MenuBarStyle: String, CaseIterable, Identifiable {
     case iconOnly = "Icon Only"
-    case iconPercentage = "Icon + Percentage"
-    case iconTime = "Icon + Time Remaining"
+    case percentage = "Percentage"
+    case time = "Time"
     var id: Self { self }
-}
-
-enum UpdateIntervalSetting: Int, CaseIterable, Identifiable {
-    case fast = 2
-    case normal = 5
-    case slow = 10
-    var id: Self { self }
-    var label: String {
-        switch self {
-        case .fast: return "Fast (2s)"
-        case .normal: return "Normal (5s)"
-        case .slow: return "Slow (10s)"
-        }
-    }
 }
 
 enum GraphHistoryZoom: Int, CaseIterable, Identifiable {
@@ -38,68 +40,190 @@ enum GraphHistoryZoom: Int, CaseIterable, Identifiable {
     }
 }
 
-struct SettingsView: View {
+struct SettingsPaneView: View {
     @AppStorage("menuBarStyle") private var menuBarStyle: MenuBarStyle = .iconOnly
-    @AppStorage("updateInterval") private var updateInterval: UpdateIntervalSetting = .normal
-    @AppStorage("graphZoomDefault") private var graphZoomDefault: GraphHistoryZoom = .oneHour
+    @AppStorage("graphZoomDefault") private var graphZoomDefault: GraphHistoryZoom = .sixHours
     @AppStorage("appOpacity") private var appOpacity: Double = 1.0
-    
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    
+    @AppStorage("compactTime") private var compactTime: Bool = false
+    @AppStorage("showBackgroundProcesses") private var showBackgroundProcesses: Bool = false
+
+    @State private var launchAtLogin = false
+    private let lalLog = Logger(subsystem: "com.example.Flux", category: "LaunchAtLogin")
+
+    let onBack: () -> Void
+
     var body: some View {
-        Form {
-            Section(header: Text("General")) {
-                Toggle("Launch at Login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { newValue in
-                        do {
-                            if newValue {
-                                try SMAppService.mainApp.register()
-                            } else {
-                                try SMAppService.mainApp.unregister()
+        VStack(alignment: .leading, spacing: 0) {
+            // ── Header ────────────────────────────────────────────────
+            HStack {
+                Button(action: onBack) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Back")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text("Settings")
+                    .font(.system(size: 13, weight: .semibold))
+
+                Spacer()
+
+                // Invisible balance for the Back button
+                Color.clear.frame(width: 44, height: 1)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 14)
+
+            // ── Settings content ──────────────────────────────────────
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+
+                    // APPEARANCE: opacity + menu bar style
+                    SettingsGroupView(title: "Appearance") {
+                        SettingsSliderRow(label: "Opacity", value: $appOpacity, in: 0.1...1.0)
+                        Divider().padding(.horizontal, 10)
+                        SettingsPickerRow(label: "Menu Bar", selection: $menuBarStyle) {
+                            ForEach(MenuBarStyle.allCases) { style in
+                                Text(style.rawValue).tag(style)
                             }
-                        } catch {
-                            print("Failed to update Launch at Login: \(error)")
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
+                        }
+                        if menuBarStyle == .time {
+                            Divider().padding(.horizontal, 10)
+                            SettingsToggleRow(label: "Show time only", isOn: $compactTime)
                         }
                     }
-                
-                Picker("Menu Bar Style", selection: $menuBarStyle) {
-                    ForEach(MenuBarStyle.allCases) { style in
-                        Text(style.rawValue).tag(style)
-                    }
-                }
-                
-                Picker("Update Interval", selection: $updateInterval) {
-                    ForEach(UpdateIntervalSetting.allCases) { interval in
-                        Text(interval.label).tag(interval)
-                    }
-                }
-            }
 
-            Section(header: Text("Appearance").padding(.top, 10)) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Window Opacity")
-                    
-                    HStack {
-                        Slider(value: $appOpacity, in: 0.1...1.0)
-                        
-                        Text("\(Int(appOpacity * 100))%")
-                            .foregroundColor(.secondary)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 45, alignment: .trailing)
+                    // GENERAL (graph zoom + launch at login)
+                    SettingsGroupView(title: "General") {
+                        SettingsPickerRow(label: "Default Zoom", selection: $graphZoomDefault) {
+                            ForEach(GraphHistoryZoom.allCases) { zoom in
+                                Text(zoom.label).tag(zoom)
+                            }
+                        }
+                        Divider().padding(.horizontal, 10)
+                        SettingsToggleRow(
+                            label: "Launch at Login",
+                            isOn: Binding(
+                                get: { launchAtLogin },
+                                set: { newValue in
+                                    launchAtLogin = newValue
+                                    let logLine = "[DEBUG-lal] binding set, newValue=\(newValue), bundleID=\(Bundle.main.bundleIdentifier ?? "nil"), bundlePath=\(Bundle.main.bundlePath)\n"
+                                    try? logLine.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
+                                    do {
+                                        if newValue { try SMAppService.mainApp.register() }
+                                        else { try SMAppService.mainApp.unregister() }
+                                        let ok = "[DEBUG-lal] success, status=\(SMAppService.mainApp.status.rawValue)\n"
+                                        try? ok.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
+                                    } catch {
+                                        let fail = "[DEBUG-lal] error=\(error), status=\(SMAppService.mainApp.status.rawValue)\n"
+                                        try? fail.appendLine(to: URL(fileURLWithPath: "/tmp/flux_lal.txt"))
+                                        launchAtLogin = SMAppService.mainApp.status == .enabled
+                                    }
+                                }
+                            )
+                        )
+                        Divider().padding(.horizontal, 10)
+                        SettingsToggleRow(label: "Include Background Processes", isOn: $showBackgroundProcesses)
                     }
                 }
-            }
-            
-            Section(header: Text("Graph")) {
-                Picker("Default Graph Zoom", selection: $graphZoomDefault) {
-                    ForEach(GraphHistoryZoom.allCases) { zoom in
-                        Text(zoom.label).tag(zoom)
-                    }
-                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
             }
         }
-        .padding(20)
-        .frame(width: 350)
+        .onAppear {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+}
+
+struct SettingsGroupView<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold))
+                .tracking(0.5)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
+            VStack(spacing: 0) { content() }
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+        }
+    }
+}
+
+struct SettingsToggleRow: View {
+    let label: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack {
+            Text(label).font(.system(size: 12))
+            Spacer()
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.checkbox)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+    }
+}
+
+struct SettingsPickerRow<SelectionValue: Hashable, Content: View>: View {
+    let label: String
+    @Binding var selection: SelectionValue
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        HStack {
+            Text(label).font(.system(size: 12))
+            Spacer()
+            Picker("", selection: $selection) { content() }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .font(.system(size: 12))
+                .frame(width: 110)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+}
+
+struct SettingsSliderRow: View {
+    let label: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+
+    init(label: String, value: Binding<Double>, in range: ClosedRange<Double>) {
+        self.label = label
+        self._value = value
+        self.range = range
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label).font(.system(size: 12))
+                Spacer()
+                Text("\(Int(value * 100))%")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: $value, in: range)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
     }
 }
