@@ -13,9 +13,10 @@ DerivedData/
 *.app
 *.zip
 *.jpg
-GEMINI.md
+release.sh
 /AGENTS.md
 /CLAUDE.md
 *.gitignore
 /scratch
 /Flux.xcodeproj
+/Icon-Exports/
