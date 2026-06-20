@@ -9,6 +9,22 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system = "System"
+    case light = "Light"
+    case dark = "Dark"
+
+    var id: Self { self }
+
+    var preferredColorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 enum GraphHistoryZoom: Int, CaseIterable, Identifiable {
     case oneHour = 1
     case sixHours = 6
@@ -26,6 +42,7 @@ enum GraphHistoryZoom: Int, CaseIterable, Identifiable {
 }
 
 struct SettingsPaneView: View {
+    @AppStorage("appAppearance") private var appAppearance: AppAppearance = .system
     @AppStorage("menuBarStyle") private var menuBarStyle: MenuBarStyle = .iconOnly
     @AppStorage("graphZoomDefault") private var graphZoomDefault: GraphHistoryZoom = .sixHours
     @AppStorage("appOpacity") private var appOpacity: Double = 1.0
@@ -68,8 +85,14 @@ struct SettingsPaneView: View {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 20) {
 
-                    // APPEARANCE: opacity + menu bar style
+                    // APPEARANCE: theme + opacity + menu bar style
                     SettingsGroupView(title: "Appearance") {
+                        SettingsPickerRow(label: "Theme", selection: $appAppearance) {
+                            ForEach(AppAppearance.allCases) { appearance in
+                                Text(appearance.rawValue).tag(appearance)
+                            }
+                        }
+                        Divider().padding(.horizontal, 11)
                         SettingsSliderRow(label: "Opacity", value: $appOpacity, in: 0.1...1.0)
                         Divider().padding(.horizontal, 11)
                         SettingsPickerRow(label: "Menu Bar", selection: $menuBarStyle) {

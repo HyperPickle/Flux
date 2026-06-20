@@ -423,11 +423,12 @@ struct ContentView: View {
 
                 // ── System Metrics Row ──────────────────────────────────
                 HStack(spacing: 8) {
+                    let userColor = getCPUColor(monitor.systemCPUUser)
+                    MetricPill(label: "CPU", value: String(format: "User %.0f%%", monitor.systemCPUUser),
+                               icon: "cpu", color: userColor)
                     let cpuColor = getCPUColor(monitor.systemCPUSys)
-                    MetricPill(label: "CPU", value: String(format: "KERNEL %.0f%%", monitor.systemCPUSys),
+                    MetricPill(label: "CPU", value: String(format: "Kernel %.0f%%", monitor.systemCPUSys),
                                icon: "cpu", color: cpuColor)
-                    let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
-                    MetricPill(label: "DRAIN", value: drain.label, icon: "bolt", color: drain.color)
                     if let temp = monitor.cpuTemperature {
                         let tempColor: Color =
                             temp < 55 ? .fluxGreen : temp < 75 ? .fluxYellow : .fluxRed
@@ -463,30 +464,10 @@ struct ContentView: View {
 
                         Spacer()
 
-                        let userColor = getCPUColor(monitor.systemCPUUser)
-                        HStack(spacing: 4) {
-                            Image(systemName: "cpu")
-                                .font(.system(size: 8))
-                            Text("User")
-                                .textCase(.uppercase)
-                                .tracking(0.5)
-                            Text(String(format: "%.0f%%", monitor.systemCPUUser))
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
-                        }
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundColor(userColor)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 7).fill(.ultraThinMaterial)
-                                RoundedRectangle(cornerRadius: 7).fill(
-                                    userColor.opacity(colorScheme == .light ? 0.16 : 0.10))
-                            }
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7).strokeBorder(
-                                userColor.opacity(colorScheme == .light ? 0.32 : 0.20),
-                                lineWidth: 0.75))
+                        let drain = DrainLevel(totalImpact: monitor.totalEnergyImpact)
+                        Text(drain.label)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
                     .foregroundColor(.secondary)
                     .contentShape(Rectangle())
