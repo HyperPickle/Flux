@@ -1,6 +1,17 @@
 import Foundation
+import IOKit
 import IOKit.ps
 import AppKit
+
+// Process names suppressed from the "Background Processes" view — pure OS noise
+// that would otherwise clutter the list without being user-actionable.
+private let backgroundProcessBlockList: Set<String> = [
+    "finder", "windowserver", "dock", "loginwindow", "launchd",
+    "kernel_task", "mds", "mdworker", "mds_stores", "spotlight",
+    "systemuiserver", "controlcenter", "notificationcenter",
+    "usernotificationcenter", "hidd", "commcenter",
+    "nsurlsessiond", "trustd", "configd"
+]
 
 // MARK: - Data point for sparklines
 struct AppMetricPoint: Identifiable, Equatable {
@@ -26,6 +37,7 @@ class BatteryMonitor: ObservableObject {
     @Published var isCharging: Bool = false
     @Published var powerSource: String = "Unknown"
     @Published var timeRemaining: String = "Calculating…"
+    @Published var batteryWatts: Double = 0.0
     @Published var topEnergyApps: [AppEnergyUsage] = []
     @Published var totalEnergyImpact: Double = 0.0
     
@@ -35,6 +47,7 @@ class BatteryMonitor: ObservableObject {
     @Published var systemRAMPercent: Double = 0.0
     @Published var memoryPressure: String = "Normal"
     @Published var memoryPressureState: Int = 0 // 0: Normal, 1: Warn, 2: Critical
+    @Published var cpuTemperature: Double? = nil
     @Published var batteryHistory: [BatteryDataPoint] = [] {
         didSet {
             saveHistory()
@@ -53,6 +66,9 @@ class BatteryMonitor: ObservableObject {
     private let maxHistory = 720
     private var timer: Timer?
     private var topProcess: Process?
+    private var smcReader = SMCReader()
+    nonisolated(unsafe) private var psRunLoopSource: CFRunLoopSource?
+    private static weak var current: BatteryMonitor?
     
     private let coreCount: Double = {
         var ncpu: Int32 = 0
@@ -70,9 +86,14 @@ class BatteryMonitor: ObservableObject {
 
     init() {
         print("DEBUG: BatteryMonitor initializing...")
+        if !smcReader.open() {
+            print("DEBUG: SMC open failed — CPU temperature unavailable.")
+        }
         loadHistory()
         fetchBatteryInfo()
+        fetchCPUTemperature()
         startMonitoring()
+        startPowerSourceNotification()
         startTopStream()
     }
 
@@ -105,23 +126,38 @@ class BatteryMonitor: ObservableObject {
 
     deinit {
         topProcess?.terminate()
+        if let source = psRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .defaultMode)
+        }
+        smcReader.close()
+    }
+
+    private func fetchCPUTemperature() {
+        cpuTemperature = smcReader.readTemperature(
+            keys: ["TC0P", "TC0E", "TC0D", "Tp01", "Tp05", "TaLC", "TCXC", "TCSC"]
+        )
     }
 
     private func startMonitoring() {
-        let interval = UserDefaults.standard.double(forKey: "updateInterval") > 0 ? UserDefaults.standard.double(forKey: "updateInterval") : 5.0
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.fetchBatteryInfo()
                 self?.fetchMemoryPressure()
-                
-                // Check if interval changed
-                let newInterval = UserDefaults.standard.double(forKey: "updateInterval") > 0 ? UserDefaults.standard.double(forKey: "updateInterval") : 5.0
-                if let currentTimer = self?.timer, currentTimer.timeInterval != newInterval {
-                    currentTimer.invalidate()
-                    self?.startMonitoring()
-                }
+                self?.fetchCPUTemperature()
             }
         }
+    }
+
+    private func startPowerSourceNotification() {
+        BatteryMonitor.current = self
+        guard let source = IOPSNotificationCreateRunLoopSource({ _ in
+            Task { @MainActor in
+                BatteryMonitor.current?.fetchBatteryInfo()
+                BatteryMonitor.current?.fetchMemoryPressure()
+            }
+        }, nil)?.takeRetainedValue() else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+        psRunLoopSource = source
     }
 
     private func fetchMemoryPressure() {
@@ -152,7 +188,6 @@ class BatteryMonitor: ObservableObject {
             if let state = info[kIOPSPowerSourceStateKey] as? String {
                 powerSource = (state == kIOPSACPowerValue) ? "AC Power" : "Battery"
             }
-
             if isCharging {
                 if let timeToFull = info[kIOPSTimeToFullChargeKey] as? Int, timeToFull > 0 {
                     let h = timeToFull / 60; let m = timeToFull % 60
@@ -162,9 +197,11 @@ class BatteryMonitor: ObservableObject {
                 if let timeToEmpty = info[kIOPSTimeToEmptyKey] as? Int, timeToEmpty > 0 {
                     let h = timeToEmpty / 60; let m = timeToEmpty % 60
                     timeRemaining = "\(h):\(String(format: "%02d", m)) remaining"
-                } else { timeRemaining = "On Battery" }
+                } else { timeRemaining = "Calculating…" }
             }
             
+            fetchBatteryWatts()
+
             // Update history
             let now = Date()
             let newPoint = BatteryDataPoint(id: (batteryHistory.last?.id ?? -1) + 1, time: now, level: batteryLevel)
@@ -179,11 +216,34 @@ class BatteryMonitor: ObservableObject {
         }
     }
 
+    /// Reads instantaneous battery power draw/charge from the IORegistry
+    /// `AppleSmartBattery` entry. The IOPS power-source dictionary does not
+    /// expose amperage/voltage, so we have to go to the registry directly.
+    private func fetchBatteryWatts() {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+        guard service != 0 else { return }
+        defer { IOObjectRelease(service) }
+
+        var props: Unmanaged<CFMutableDictionary>?
+        guard IORegistryEntryCreateCFProperties(service, &props, kCFAllocatorDefault, 0) == kIOReturnSuccess,
+              let dict = props?.takeRetainedValue() as? [String: Any] else { return }
+
+        // Amperage is signed (negative while discharging) and may be reported
+        // as a 64-bit two's-complement value; NSNumber preserves the sign.
+        guard let mA = (dict["Amperage"] as? NSNumber)?.doubleValue,
+              let mV = (dict["Voltage"] as? NSNumber)?.doubleValue else { return }
+
+        batteryWatts = abs(mA * mV) / 1_000_000.0
+    }
+
     private func startTopStream() {
         let runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        let runningAppNames = runningApps.compactMap { $0.localizedName }
+        // Also surface menu-bar extras and background helpers with minimal UI.
+        let accessoryApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .accessory }
+        let allApps = runningApps + accessoryApps
+        let runningAppNames = allApps.compactMap { $0.localizedName }
         var runningAppIcons: [String: NSImage] = [:]
-        for app in runningApps {
+        for app in allApps {
             if let name = app.localizedName, let icon = app.icon { runningAppIcons[name] = icon }
         }
 
@@ -272,6 +332,17 @@ class BatteryMonitor: ObservableObject {
                 }
             if let appName = matchedApp {
                 await addToSample(appName: appName, power: power, cpu: cpu, memMB: parseMemToMB(memStr))
+            } else if UserDefaults.standard.bool(forKey: "showBackgroundProcesses") {
+                let baseName = commandName.components(separatedBy: "(").first?
+                    .trimmingCharacters(in: .whitespaces) ?? commandName
+                let lower = baseName.lowercased()
+                let blocked = backgroundProcessBlockList.contains(lower)
+                    || lower.hasPrefix("com.apple.")
+                    || lower.hasPrefix("com.google.")
+                let hasActivity = power > 0 || rawCpu > 3.0
+                if !blocked && hasActivity {
+                    await addToSample(appName: commandName, power: power, cpu: cpu, memMB: parseMemToMB(memStr))
+                }
             }
         }
     }
