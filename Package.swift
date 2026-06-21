@@ -17,5 +17,9 @@ let package = Package(
                 .linkedFramework("IOKit")
             ]
         ),
+        .testTarget(
+            name: "FluxTests",
+            dependencies: ["Flux"]
+        ),
     ]
 )

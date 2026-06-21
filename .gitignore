@@ -1,5 +1,6 @@
 .DS_Store
 /.build
+/.vscode
 /Packages
 /Releases
 xcuserdata/
@@ -20,3 +21,4 @@ release.sh
 /scratch
 /Flux.xcodeproj
 /Icon-Exports/
+/Tests

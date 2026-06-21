@@ -22,7 +22,139 @@ struct AppEnergyUsage: Identifiable {
     let icon: NSImage?
 }
 
-private struct TopFrame: Sendable {
+enum ProcessRole: Equatable, Sendable {
+    case primaryApp
+    case helper(ownerPID: Int32)
+    case hidden
+}
+
+struct RunningProcessMetadata: Equatable, Sendable {
+    enum ActivationPolicy: Equatable, Sendable {
+        case regular
+        case accessory
+        case prohibited
+    }
+
+    let pid: Int32
+    let name: String?
+    let bundleIdentifier: String?
+    let bundleURLPath: String?
+    let activationPolicy: ActivationPolicy
+}
+
+struct ProcessOwnershipResolution: Equatable, Sendable {
+    let roleByPID: [Int32: ProcessRole]
+    let displayOwnerByPID: [Int32: String]
+}
+
+struct ProcessDisplayIdentityResolver {
+    func iconsByOwner(
+        resolution: ProcessOwnershipResolution,
+        primaryIconsByPID: [Int32: NSImage]
+    ) -> [String: NSImage] {
+        var result: [String: NSImage] = [:]
+        for (pid, role) in resolution.roleByPID where role == .primaryApp {
+            guard let name = resolution.displayOwnerByPID[pid],
+                  let icon = primaryIconsByPID[pid] else { continue }
+            result[name] = icon
+        }
+        return result
+    }
+}
+
+/// Resolves background processes to a user-facing regular application. Unknown
+/// processes are deliberately hidden instead of becoming noisy standalone rows.
+struct ProcessOwnershipResolver: Sendable {
+    func resolve(_ processes: [RunningProcessMetadata]) -> ProcessOwnershipResolution {
+        let primaryApps = processes.filter { $0.activationPolicy == .regular && $0.name != nil }
+        let safari = primaryApps.first { process in
+            process.name?.caseInsensitiveCompare("Safari") == .orderedSame ||
+                process.bundleIdentifier == "com.apple.Safari"
+        }
+
+        var roles: [Int32: ProcessRole] = [:]
+        var owners: [Int32: String] = [:]
+
+        for process in processes {
+            if process.activationPolicy == .regular, let name = process.name {
+                roles[process.pid] = .primaryApp
+                owners[process.pid] = name
+                continue
+            }
+
+            let owner = nestedBundleOwner(for: process, among: primaryApps)
+                ?? derivedBundleIdentifierOwner(for: process, among: primaryApps)
+                ?? safariOwner(for: process, safari: safari)
+                ?? helperNameOwner(for: process, among: primaryApps)
+
+            if let owner, let ownerName = owner.name {
+                roles[process.pid] = .helper(ownerPID: owner.pid)
+                owners[process.pid] = ownerName
+            } else {
+                roles[process.pid] = .hidden
+            }
+        }
+
+        return ProcessOwnershipResolution(roleByPID: roles, displayOwnerByPID: owners)
+    }
+
+    private func nestedBundleOwner(
+        for process: RunningProcessMetadata,
+        among primaryApps: [RunningProcessMetadata]
+    ) -> RunningProcessMetadata? {
+        guard let childPath = process.bundleURLPath else { return nil }
+        return primaryApps
+            .filter { primary in
+                guard let parentPath = primary.bundleURLPath else { return false }
+                return childPath.hasPrefix(parentPath + "/")
+            }
+            .max { ($0.bundleURLPath?.count ?? 0) < ($1.bundleURLPath?.count ?? 0) }
+    }
+
+    private func derivedBundleIdentifierOwner(
+        for process: RunningProcessMetadata,
+        among primaryApps: [RunningProcessMetadata]
+    ) -> RunningProcessMetadata? {
+        guard let childIdentifier = process.bundleIdentifier else { return nil }
+        return primaryApps
+            .filter { primary in
+                guard let parentIdentifier = primary.bundleIdentifier else { return false }
+                return childIdentifier.hasPrefix(parentIdentifier + ".")
+            }
+            .max { ($0.bundleIdentifier?.count ?? 0) < ($1.bundleIdentifier?.count ?? 0) }
+    }
+
+    private func safariOwner(
+        for process: RunningProcessMetadata,
+        safari: RunningProcessMetadata?
+    ) -> RunningProcessMetadata? {
+        guard let safari else { return nil }
+        let identifier = process.bundleIdentifier?.lowercased() ?? ""
+        let name = process.name?.lowercased() ?? ""
+        let isWebKitChild = identifier.hasPrefix("com.apple.webkit.") ||
+            name.hasPrefix("com.apple.webkit.") ||
+            name.hasPrefix("webkit") ||
+            name.contains("safari web content") ||
+            name.contains("safari networking") ||
+            name.contains("safari graphics and media")
+        return isWebKitChild ? safari : nil
+    }
+
+    private func helperNameOwner(
+        for process: RunningProcessMetadata,
+        among primaryApps: [RunningProcessMetadata]
+    ) -> RunningProcessMetadata? {
+        guard let childName = process.name?.lowercased() else { return nil }
+        return primaryApps
+            .filter { primary in
+                guard let parentName = primary.name?.lowercased() else { return false }
+                return childName.hasPrefix(parentName + " helper")
+            }
+            .max { ($0.name?.count ?? 0) < ($1.name?.count ?? 0) }
+    }
+}
+
+struct TopFrame: Sendable {
     var powerByApp: [String: Double] = [:]
     var cpuByApp: [String: Double] = [:]
     var memoryByApp: [String: Int] = [:]
@@ -33,9 +165,8 @@ private struct TopFrame: Sendable {
 
 /// Parses `top` output off the main actor. Logging-mode `top` reports cumulative
 /// values in its first frame, so only the second frame is returned.
-private struct TopFrameParser: Sendable {
-    let appByPID: [Int32: String]
-    let foregroundAppNames: [String]
+struct TopFrameParser: Sendable {
+    let displayOwnerByPID: [Int32: String]
 
     private var frame = TopFrame()
     private var isReadingProcesses = false
@@ -85,34 +216,10 @@ private struct TopFrameParser: Sendable {
         let power = Double(parts[parts.count - 2]) ?? 0
         // Keep Activity Monitor's per-core convention: one saturated core is 100%.
         let cpu = Double(parts[parts.count - 3]) ?? 0
-        let command = parts[1..<(parts.count - 3)].joined(separator: " ")
-
-        guard let appName = attributedAppName(pid: pid, command: command) else { return }
+        guard let appName = displayOwnerByPID[pid] else { return }
         frame.powerByApp[appName, default: 0] += power
         frame.cpuByApp[appName, default: 0] += cpu
         frame.memoryByApp[appName, default: 0] += memory
-    }
-
-    private func attributedAppName(pid: Int32, command: String) -> String? {
-        if let exactApp = appByPID[pid] { return exactApp }
-
-        let baseName = command.components(separatedBy: "(").first?
-            .trimmingCharacters(in: .whitespaces) ?? command
-        let lower = baseName.lowercased()
-
-        if lower.hasPrefix("com.apple.webkit.") || lower.hasPrefix("webkit") {
-            return foregroundAppNames.first { $0.caseInsensitiveCompare("Safari") == .orderedSame }
-        }
-
-        // Exact display names and explicit helper suffixes avoid substring collisions.
-        if let owner = foregroundAppNames.sorted(by: { $0.count > $1.count }).first(where: {
-            let app = $0.lowercased()
-            return lower == app || lower.hasPrefix(app + " helper")
-        }) {
-            return owner
-        }
-
-        return nil
     }
 
     private func percentage(_ value: String) -> Double {
@@ -376,25 +483,37 @@ class BatteryMonitor: ObservableObject {
         let allApps = NSWorkspace.shared.runningApplications.filter { app in
             guard app.processIdentifier != ownPID else { return false }
             if let ownBundleIdentifier, app.bundleIdentifier == ownBundleIdentifier { return false }
-            // Also surface menu-bar extras and background helpers with minimal UI.
-            return app.activationPolicy == .regular || app.activationPolicy == .accessory
+            return true
         }
-        let runningAppNames = allApps.compactMap { $0.localizedName }
-        var runningAppIcons: [String: NSImage] = [:]
-        var appByPID: [Int32: String] = [:]
-        for app in allApps {
-            guard let name = app.localizedName else { continue }
-            appByPID[app.processIdentifier] = name
-            if let icon = app.icon { runningAppIcons[name] = icon }
+        let metadata = allApps.map { app in
+            let activationPolicy: RunningProcessMetadata.ActivationPolicy
+            switch app.activationPolicy {
+            case .regular: activationPolicy = .regular
+            case .accessory: activationPolicy = .accessory
+            default: activationPolicy = .prohibited
+            }
+            return RunningProcessMetadata(
+                pid: app.processIdentifier,
+                name: app.localizedName,
+                bundleIdentifier: app.bundleIdentifier,
+                bundleURLPath: app.bundleURL?.standardizedFileURL.path,
+                activationPolicy: activationPolicy
+            )
         }
-        let isSafariRunning = runningAppNames.contains {
-            $0.caseInsensitiveCompare("Safari") == .orderedSame
-        }
-        for app in NSWorkspace.shared.runningApplications where isSafariRunning {
-            if app.bundleIdentifier?.hasPrefix("com.apple.WebKit.") == true {
-                appByPID[app.processIdentifier] = "Safari"
+        let ownership = ProcessOwnershipResolver().resolve(metadata)
+        var primaryIconsByPID: [Int32: NSImage] = [:]
+        for app in allApps where app.activationPolicy == .regular {
+            if let icon = app.icon {
+                primaryIconsByPID[app.processIdentifier] = icon
+            } else if let bundleURL = app.bundleURL {
+                // A folded helper always inherits the regular app's branding.
+                primaryIconsByPID[app.processIdentifier] = NSWorkspace.shared.icon(forFile: bundleURL.path)
             }
         }
+        let runningAppIcons = ProcessDisplayIdentityResolver().iconsByOwner(
+            resolution: ownership,
+            primaryIconsByPID: primaryIconsByPID
+        )
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/top")
@@ -408,8 +527,7 @@ class BatteryMonitor: ObservableObject {
         
         Task.detached { [weak self] in
             var parser = TopFrameParser(
-                appByPID: appByPID,
-                foregroundAppNames: runningAppNames
+                displayOwnerByPID: ownership.displayOwnerByPID
             )
             var pending = Data()
             do {
